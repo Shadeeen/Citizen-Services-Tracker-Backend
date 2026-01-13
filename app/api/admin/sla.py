@@ -14,11 +14,11 @@ from app.services.sla_service import (
 
 router = APIRouter(prefix="/admin/sla", tags=["Admin SLA"])
 
-@router.get("/", response_model=list[SlaPolicyOut])
+@router.get("", response_model=list[SlaPolicyOut])
 async def get_all():
     return await list_policies()
 
-@router.post("/", response_model=SlaPolicyOut)
+@router.post("", response_model=SlaPolicyOut)
 async def create(data: SlaPolicyCreate):
     return await create_policy(data)
 
