@@ -4,3 +4,5 @@ client = AsyncIOMotorClient("mongodb+srv://Shaden:Shaden_04@cluster0.rmqob2j.mon
 db = client["cst"]
 
 sla_collection = db["sla_policies"]
+audit_collection = db["audit_logs"]
+
