@@ -1,5 +1,12 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi import APIRouter, Depends
+from app.services.audit_service import AuditService
+from app.schemas.audit import AuditLogOut
+from typing import List
+from app.api.admin import audit
+from app.api.admin import analytics
+
 
 from app.api.admin.sla import router as sla_router
 from app.api.admin.audit import router as audit_router
@@ -10,6 +17,9 @@ from app.api.admin.agents import router as agents_router
 
 app = FastAPI(title="CST Backend (MongoDB)")
 
+app.include_router(sla_router)
+app.include_router(audit.router)
+app.include_router(analytics.router)
 
 app.add_middleware(
     CORSMiddleware,

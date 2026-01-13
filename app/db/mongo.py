@@ -6,4 +6,4 @@ db = client["cst"]
 sla_collection = db["sla_policies"]
 audit_collection = db["audit_logs"]
 users_collection = db["users"]
-
+requests_collection=db["requests"]
