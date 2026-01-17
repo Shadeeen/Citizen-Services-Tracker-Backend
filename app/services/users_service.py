@@ -3,15 +3,17 @@ from bson import ObjectId
 from app.db.mongo import users_collection
 from app.core.security import hash_password, verify_password
 
+
 def _to_out(doc):
     return {
         "id": str(doc["_id"]),
         "full_name": doc["full_name"],
         "email": doc["email"],
         "role": doc["role"],
-        "is_active": doc.get("is_active", True),
+        "is_active": doc.get("is_active", True),  # ✅ FIX
         "created_at": doc["created_at"],
     }
+
 
 async def list_users(q: str | None = None, role: str | None = None, active: bool | None = None):
     filt = {"deleted": {"$ne": True}}
@@ -26,6 +28,7 @@ async def list_users(q: str | None = None, role: str | None = None, active: bool
         ]
     rows = await users_collection.find(filt).sort("created_at", -1).to_list(length=200)
     return [_to_out(d) for d in rows]
+
 
 async def create_user(data):
     existing = await users_collection.find_one({"email": data.email, "deleted": {"$ne": True}})
@@ -45,9 +48,11 @@ async def create_user(data):
     doc["_id"] = res.inserted_id
     return _to_out(doc)
 
+
 async def get_user(user_id: str):
     doc = await users_collection.find_one({"_id": ObjectId(user_id), "deleted": {"$ne": True}})
     return _to_out(doc) if doc else None
+
 
 async def update_user(user_id: str, patch: dict):
     doc = await users_collection.find_one({"_id": ObjectId(user_id), "deleted": {"$ne": True}})
@@ -66,6 +71,7 @@ async def update_user(user_id: str, patch: dict):
     doc2 = await users_collection.find_one({"_id": ObjectId(user_id)})
     return _to_out(doc2)
 
+
 async def toggle_user_active(user_id: str):
     doc = await users_collection.find_one({"_id": ObjectId(user_id), "deleted": {"$ne": True}})
     if not doc:
@@ -75,6 +81,7 @@ async def toggle_user_active(user_id: str):
     doc2 = await users_collection.find_one({"_id": ObjectId(user_id)})
     return _to_out(doc2)
 
+
 async def delete_user(user_id: str):
     res = await users_collection.update_one(
         {"_id": ObjectId(user_id)},
@@ -82,12 +89,20 @@ async def delete_user(user_id: str):
     )
     return res.modified_count == 1
 
+
 async def login(email: str, password: str):
-    doc = await users_collection.find_one({"email": email, "deleted": {"$ne": True}})
+    doc = await users_collection.find_one({
+        "email": email,
+        "deleted": {"$ne": True}
+    })
+
     if not doc:
         return None
+
     if not doc.get("is_active", True):
         return "inactive"
+
     if not verify_password(password, doc["password_hash"]):
         return None
+
     return _to_out(doc)

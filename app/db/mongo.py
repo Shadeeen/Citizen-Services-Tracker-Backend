@@ -7,3 +7,9 @@ sla_collection = db["sla_policies"]
 audit_collection = db["audit_logs"]
 users_collection = db["users"]
 requests_collection=db["requests"]
+team_collection=db["teams"]
+cat_collection = db["category"]
+subcategory_collection = db["subcategory"]
+
+def get_db():
+    return db

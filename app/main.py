@@ -13,13 +13,17 @@ from app.api.admin.audit import router as audit_router
 from app.api.admin.users import router as users_router
 from app.api.admin.teams import router as teams_router
 from app.api.admin.categories import router as categories_router
-from app.api.admin.agents import router as agents_router
+from app.api.admin import categories, subcategories
+
+
 
 app = FastAPI(title="CST Backend (MongoDB)")
 
 app.include_router(sla_router)
 app.include_router(audit.router)
 app.include_router(analytics.router)
+app.include_router(categories.router)
+app.include_router(subcategories.router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -39,8 +43,6 @@ app.include_router(sla_router)
 app.include_router(audit_router)
 app.include_router(users_router)
 app.include_router(teams_router)
-app.include_router(categories_router)
-app.include_router(agents_router)
 
 @app.get("/")
 def root():

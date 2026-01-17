@@ -1,5 +1,5 @@
 from typing import Dict, List
-from app.schemas.categories import (
+from app.schemas.category import (
     CategoryCreate, CategoryPatch, CategoryOut,
     SubcategoryCreate, SubcategoryPatch, SubcategoryOut, ValidationRules
 )

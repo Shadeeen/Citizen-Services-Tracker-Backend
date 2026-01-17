@@ -1,88 +1,83 @@
-from fastapi import APIRouter, HTTPException
-from typing import List
+from datetime import datetime
+from fastapi import APIRouter, Depends, HTTPException
+from bson import ObjectId
+from bson.errors import InvalidId
 
-from app.schemas.categories import (
-    CategoryCreate, CategoryPatch, CategoryOut,
-    SubcategoryCreate, SubcategoryPatch, SubcategoryOut
+from app.db.mongo import get_db
+from app.schemas.category import CategoryCreate, CategoryResponse
+
+router = APIRouter(
+    prefix="/admin/categories",
+    tags=["Categories"]
 )
-from app.services.categories_service import (
-    list_categories, create_category, patch_category, toggle_category, delete_category,
-    list_subcategories, create_subcategory, patch_subcategory, toggle_subcategory, delete_subcategory
-)
 
-router = APIRouter(prefix="/admin/categories", tags=["Admin - Categories"])
 
-# Categories
-@router.get("", response_model=List[CategoryOut])
-def get_all():
-    return list_categories()
+@router.get("", response_model=list[CategoryResponse])
+async def list_categories(db=Depends(get_db)):
+    result = []
 
-@router.post("", response_model=CategoryOut)
-def create(payload: CategoryCreate):
+    async for c in db.category.find({"deleted": False}):
+        count = await db.subcategory.count_documents({
+            "category_id": str(c["_id"]),
+            "deleted": False
+        })
+
+        result.append({
+            "id": str(c["_id"]),
+            "name": c["name"],
+            "active": c.get("active", True),
+            "subcategories_count": count
+        })
+
+    return result
+
+
+@router.post("", response_model=CategoryResponse)
+async def create_category(payload: CategoryCreate, db=Depends(get_db)):
+    res = await db.category.insert_one({
+        "name": payload.name,
+        "active": True,
+        "deleted": False,
+        "created_at": datetime.utcnow(),
+    })
+
+    return {
+        "id": str(res.inserted_id),
+        "name": payload.name,
+        "active": True,
+        "subcategories_count": 0
+    }
+
+
+@router.post("/{category_id}/delete")
+async def soft_delete_category(category_id: str, db=Depends(get_db)):
     try:
-        return create_category(payload)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        category_obj_id = ObjectId(category_id)
+    except InvalidId:
+        raise HTTPException(status_code=400, detail="Invalid category id")
 
-@router.patch("/{code}", response_model=CategoryOut)
-def patch(code: str, payload: CategoryPatch):
-    try:
-        return patch_category(code, payload)
-    except KeyError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+    category = await db.category.find_one({
+        "_id": category_obj_id,
+        "deleted": False
+    })
 
-@router.delete("/{code}")
-def remove(code: str):
-    try:
-        delete_category(code)
-        return {"ok": True}
-    except KeyError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+    if not category:
+        raise HTTPException(status_code=404, detail="Category not found")
 
-@router.post("/{code}/toggle", response_model=CategoryOut)
-def toggle(code: str):
-    try:
-        return toggle_category(code)
-    except KeyError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+    active_subs = await db.subcategory.count_documents({
+        "category_id": category_id,
+        "deleted": False
+    })
 
-# Subcategories
-@router.get("/{code}/subcategories", response_model=List[SubcategoryOut])
-def get_subs(code: str):
-    try:
-        return list_subcategories(code)
-    except KeyError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+    if active_subs > 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot delete category with subcategories"
+        )
 
-@router.post("/{code}/subcategories", response_model=SubcategoryOut)
-def create_sub(code: str, payload: SubcategoryCreate):
-    try:
-        return create_subcategory(code, payload)
-    except KeyError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    await db.category.update_one(
+        {"_id": category_obj_id},
+        {"$set": {"deleted": True, "active": False}}
+    )
 
-@router.patch("/{code}/subcategories/{sub_code}", response_model=SubcategoryOut)
-def patch_sub(code: str, sub_code: str, payload: SubcategoryPatch):
-    try:
-        return patch_subcategory(code, sub_code, payload)
-    except KeyError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-@router.delete("/{code}/subcategories/{sub_code}")
-def remove_sub(code: str, sub_code: str):
-    try:
-        delete_subcategory(code, sub_code)
-        return {"ok": True}
-    except KeyError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-
-@router.post("/{code}/subcategories/{sub_code}/toggle", response_model=SubcategoryOut)
-def toggle_sub(code: str, sub_code: str):
-    try:
-        return toggle_subcategory(code, sub_code)
-    except KeyError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+    return {"ok": True}
