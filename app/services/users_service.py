@@ -89,6 +89,11 @@ async def delete_user(user_id: str):
     )
     return res.modified_count == 1
 
+async def get_user_by_email(email: str):
+    doc = await users_collection.find_one({"email": email, "deleted": {"$ne": True}})
+    return _to_out(doc) if doc else None
+
+
 
 async def login(email: str, password: str):
     doc = await users_collection.find_one({

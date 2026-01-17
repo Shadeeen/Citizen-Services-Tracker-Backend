@@ -14,6 +14,8 @@ from app.api.admin.users import router as users_router
 from app.api.admin.teams import router as teams_router
 from app.api.admin.categories import router as categories_router
 from app.api.admin import categories, subcategories
+from app.api.auth import router as auth_router
+
 
 
 
@@ -43,6 +45,8 @@ app.include_router(sla_router)
 app.include_router(audit_router)
 app.include_router(users_router)
 app.include_router(teams_router)
+app.include_router(auth_router)
+
 
 @app.get("/")
 def root():
