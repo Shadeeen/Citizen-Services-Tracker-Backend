@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 from pydantic import BaseModel, Field
 from app.models.category import Priority
 
@@ -24,3 +24,8 @@ class SubcategoryResponse(BaseModel):
     name: str
     priority: Priority
     active: bool
+
+class SubcategoryPatch(BaseModel):
+    name: Optional[str] = None
+    priority: Optional[Priority] = None
+    active: Optional[bool] = None

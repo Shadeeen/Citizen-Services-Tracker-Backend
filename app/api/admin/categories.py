@@ -1,10 +1,14 @@
-from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException
 from bson import ObjectId
-from bson.errors import InvalidId
+from fastapi import APIRouter, Depends, HTTPException
+from datetime import datetime
 
 from app.db.mongo import get_db
 from app.schemas.category import CategoryCreate, CategoryResponse
+from app.repositories.audit_repository import AuditRepository
+from app.services.audit_service import AuditService
+from app.db.mongo import audit_collection
+
+audit_service = AuditService(AuditRepository(audit_collection))
 
 router = APIRouter(
     prefix="/admin/categories",
@@ -33,51 +37,78 @@ async def list_categories(db=Depends(get_db)):
 
 
 @router.post("", response_model=CategoryResponse)
-async def create_category(payload: CategoryCreate, db=Depends(get_db)):
-    res = await db.category.insert_one({
-        "name": payload.name,
+async def create_category(data: CategoryCreate, db=Depends(get_db)):
+    doc = {
+        "name": data.name,
         "active": True,
         "deleted": False,
         "created_at": datetime.utcnow(),
+    }
+
+    res = await db.category.insert_one(doc)
+    category_id = str(res.inserted_id)
+
+    await audit_service.log_event({
+        "time": datetime.utcnow(),
+        "type": "category.create",
+        "actor": {
+            "role": "admin",
+            "email": "admin@system",
+        },
+        "entity": {
+            "type": "category",
+            "id": category_id,
+        },
+        "message": f"Category created ({doc['name']})",
+        "meta": {
+            "name": doc["name"]
+        }
     })
 
     return {
-        "id": str(res.inserted_id),
-        "name": payload.name,
+        "id": category_id,
+        "name": doc["name"],
         "active": True,
         "subcategories_count": 0
     }
 
 
 @router.post("/{category_id}/delete")
-async def soft_delete_category(category_id: str, db=Depends(get_db)):
-    try:
-        category_obj_id = ObjectId(category_id)
-    except InvalidId:
-        raise HTTPException(status_code=400, detail="Invalid category id")
+async def delete_category(category_id: str, db=Depends(get_db)):
+    c = await db.category.find_one(
+        {"_id": ObjectId(category_id), "deleted": False}
+    )
+    if not c:
+        raise HTTPException(404, "Category not found")
 
-    category = await db.category.find_one({
-        "_id": category_obj_id,
-        "deleted": False
-    })
-
-    if not category:
-        raise HTTPException(status_code=404, detail="Category not found")
-
-    active_subs = await db.subcategory.count_documents({
+    count = await db.subcategory.count_documents({
         "category_id": category_id,
         "deleted": False
     })
 
-    if active_subs > 0:
-        raise HTTPException(
-            status_code=400,
-            detail="Cannot delete category with subcategories"
-        )
+    if count > 0:
+        raise HTTPException(400, "Cannot delete category with subcategories")
 
     await db.category.update_one(
-        {"_id": category_obj_id},
+        {"_id": ObjectId(category_id)},
         {"$set": {"deleted": True, "active": False}}
     )
 
-    return {"ok": True}
+    await audit_service.log_event({
+        "time": datetime.utcnow(),
+        "type": "category.delete",
+        "actor": {
+            "role": "admin",
+            "email": "admin@system",
+        },
+        "entity": {
+            "type": "category",
+            "id": category_id,
+        },
+        "message": f"Category deleted ({c['name']})",
+        "meta": {
+            "name": c["name"]
+        }
+    })
+
+    return {"success": True}
