@@ -67,7 +67,7 @@ async def login_mobile(body: LoginRequest):
         raise HTTPException(403, "Admins must login from website")
 
     # السماح للموبايل فقط: citizen + employee
-    allowed_roles = {UserRole.citizen.value, UserRole.employee.value}
+    allowed_roles = {UserRole.citizen.value, UserRole.staff.value}
     if u["role"] not in allowed_roles:
         raise HTTPException(403, "Role not allowed for mobile app")
     await audit_service.log_event({
