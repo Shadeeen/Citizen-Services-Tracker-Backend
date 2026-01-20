@@ -21,6 +21,26 @@ def verify_password(password: str, hashed: str) -> bool:
     return pwd.verify(password, hashed)
 
 
+# app/core/security.py
+
+from fastapi import Request, HTTPException, status
+
+def get_current_admin(request: Request):
+    """
+    TEMP admin guard.
+    Replace later with JWT role validation.
+    """
+    role = request.headers.get("X-Role", "admin")
+
+    if role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin privileges required"
+        )
+
+    # minimal admin object
+    return type("Admin", (), {"email": "admin@cst.test"})
+
 
 
 # def require_admin(request: Request):

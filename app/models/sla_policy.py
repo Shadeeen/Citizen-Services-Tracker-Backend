@@ -1,19 +1,28 @@
-from uuid import uuid4
+from datetime import datetime
+from typing import List, Optional
+from pydantic import BaseModel, Field
 
-def build_sla_doc(data: dict) -> dict:
-    return {
-        "_id": str(uuid4()),
+class EscalationStep(BaseModel):
+    after_hours: int
+    action: str
 
-        "name": data["name"],
-        "zone": data["zone"],
-        "priority": data["priority"],
 
-        "category_code": data["category_code"],
-        "subcategory_code": data["subcategory_code"],
+class SlaPolicy(BaseModel):
+    name: str
 
-        "target_hours": data["target_hours"],
-        "breach_threshold_hours": data["breach_threshold_hours"],
+    zone: str
+    priority: str
+    category: str
+    subcategory: str
 
-        "escalation_steps": data.get("escalation_steps", []),
-        "active": True,
-    }
+    target_hours: int
+    breach_hours: int
+
+    assigned_team_id: str
+
+    escalation_steps: List[EscalationStep] = []
+
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+    class Config:
+        populate_by_name = True

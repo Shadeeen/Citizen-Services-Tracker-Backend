@@ -1,134 +1,116 @@
+from datetime import datetime
+from bson import ObjectId
+
 from app.db.mongo import sla_collection, audit_collection
-from app.models.sla_policy import build_sla_doc
+from app.models.sla_policy import SLAPolicyCreate, SLAPolicyUpdate
+from app.services.requests import mark_request_triaged
 from app.repositories.audit_repository import AuditRepository
 from app.services.audit_service import AuditService
-from datetime import datetime
 
 audit_repo = AuditRepository(audit_collection)
 audit_service = AuditService(audit_repo)
 
 
-async def list_policies():
-    out = []
-    async for doc in sla_collection.find():
-        doc["id"] = str(doc.pop("_id"))
-        out.append(doc)
-    return out
+# -------------------------------------------------------------------
+# Create SLA for request → TRIAGES request
+# -------------------------------------------------------------------
+async def create_sla_for_request(data: SLAPolicyCreate, actor: dict):
+    now = datetime.utcnow()
 
+    # 1️⃣ Build SLA document
+    sla_doc = {
+        "request_id": data.request_id,
+        "team_id": data.team_id,
 
-async def create_policy(data):
-    doc = build_sla_doc(data.dict())
-    await sla_collection.insert_one(doc)
+        "name": data.name,
+        "zone": data.zone,
+        "priority": data.priority,
+        "category_code": data.category_code,
+        "subcategory_code": data.subcategory_code,
 
-    await audit_service.log_event({
-        "time": datetime.utcnow(),
-        "type": "sla.policy.create",
-        "actor": {
-            "role": "admin",
-            "email": "admin@cst.test",
-        },
-        "entity": {
-            "type": "sla",
-            "id": str(doc["_id"]),
-        },
-        "message": f"Created SLA policy {doc.get('name', '')}",
-        "meta": {},
-    })
+        "target_hours": data.target_hours,
+        "breach_threshold_hours": data.breach_threshold_hours,
+        "escalation_steps": data.escalation_steps,
 
-    doc["id"] = str(doc.pop("_id"))
-    return doc
+        "active": True,
+        "created_at": now,
+        "updated_at": now,
+    }
 
+    # 2️⃣ Insert SLA
+    res = await sla_collection.insert_one(sla_doc)
+    sla_id = res.inserted_id
 
-async def update_policy(policy_id: str, patch: dict):
-    await sla_collection.update_one(
-        {"_id": policy_id},
-        {"$set": patch},
+    # 3️⃣ TRIAGE request via service (single source of truth)
+    await mark_request_triaged(
+        request_id=data.request_id,
+        sla_id=sla_id,
+        team_id=data.team_id,
+        actor=actor,
     )
 
-    doc = await sla_collection.find_one({"_id": policy_id})
-    if not doc:
-        return None
-
+    # 4️⃣ Audit
     await audit_service.log_event({
-        "time": datetime.utcnow(),
-        "type": "sla.policy.update",
-        "actor": {
-            "role": "admin",
-            "email": "admin@cst.test",
-        },
+        "time": now,
+        "type": "sla.created",
+        "actor": actor,
         "entity": {
             "type": "sla",
-            "id": policy_id,
+            "id": str(sla_id),
         },
-        "message": f"Updated SLA policy {doc.get('name', '')}",
-        "meta": patch,
-    })
-
-    doc["id"] = str(doc.pop("_id"))
-    return doc
-
-
-async def toggle_active(policy_id: str):
-    doc = await sla_collection.find_one({"_id": policy_id})
-    if not doc:
-        return None
-
-    new_state = not doc.get("active", True)
-
-    await sla_collection.update_one(
-        {"_id": policy_id},
-        {"$set": {"active": new_state}},
-    )
-
-    await audit_service.log_event({
-        "time": datetime.utcnow(),
-        "type": "sla.policy.enable" if new_state else "sla.policy.disable",
-        "actor": {
-            "role": "admin",
-            "email": "admin@cst.test",
-        },
-        "entity": {
-            "type": "sla",
-            "id": policy_id,
-        },
-        "message": (
-            f"Enabled SLA policy {doc.get('name')}"
-            if new_state
-            else f"Disabled SLA policy {doc.get('name')}"
-        ),
+        "message": "SLA created and request triaged",
         "meta": {
-            "previous_active": not new_state,
-            "current_active": new_state,
+            "request_id": data.request_id,
+            "team_id": str(data.team_id),
         },
     })
 
-    doc["active"] = new_state
-    doc["id"] = str(doc.pop("_id"))
-    return doc
+    sla_doc["_id"] = sla_id
+    return sla_doc
 
 
-async def delete_policy(policy_id: str):
-    doc = await sla_collection.find_one({"_id": policy_id})
-    if not doc:
-        return False
+# -------------------------------------------------------------------
+# Update SLA (allowed only for existing SLA)
+# -------------------------------------------------------------------
+async def update_sla(sla_id: str, patch: SLAPolicyUpdate, actor: dict):
+    try:
+        oid = ObjectId(sla_id)
+    except Exception:
+        raise ValueError("Invalid SLA ID")
 
-    res = await sla_collection.delete_one({"_id": policy_id})
-    if res.deleted_count != 1:
-        return False
+    update = patch.dict(exclude_unset=True)
+    if not update:
+        return await sla_collection.find_one({"_id": oid})
+
+    update["updated_at"] = datetime.utcnow()
+
+    res = await sla_collection.update_one(
+        {"_id": oid},
+        {"$set": update},
+    )
+
+    if res.matched_count != 1:
+        return None
+
+    doc = await sla_collection.find_one({"_id": oid})
 
     await audit_service.log_event({
         "time": datetime.utcnow(),
-        "type": "sla.policy.delete",
-        "actor": {
-            "role": "admin",
-            "email": "admin@cst.test",
-        },
+        "type": "sla.updated",
+        "actor": actor,
         "entity": {
             "type": "sla",
-            "id": policy_id,
+            "id": sla_id,
         },
-        "message": f"Deleted SLA policy {doc.get('name', '')}",
-        "meta": {},
+        "message": "SLA updated",
+        "meta": update,
     })
 
-    return True
+    return doc
+
+
+# -------------------------------------------------------------------
+# Get SLA by request
+# -------------------------------------------------------------------
+async def get_sla_by_request(request_id: str):
+    return await sla_collection.find_one({"request_id": request_id})

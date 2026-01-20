@@ -20,7 +20,10 @@ class PyObjectId(ObjectId):
         return ObjectId(value)
 
 
+from pydantic import BaseModel
+
 class CSTBaseModel(BaseModel):
-    class Config:
-        allow_population_by_field_name = True
-        json_encoders = {ObjectId: str}
+    model_config = {
+        "populate_by_name": True,
+        "arbitrary_types_allowed": True,
+    }
