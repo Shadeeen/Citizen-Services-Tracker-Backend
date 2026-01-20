@@ -11,6 +11,7 @@ requests_collection=db["service_requests"]
 team_collection=db["teams"]
 cat_collection = db["category"]
 subcategory_collection = db["subcategory"]
+service_requests_collection = db["service_requests"]
 
 def get_db():
     return db
