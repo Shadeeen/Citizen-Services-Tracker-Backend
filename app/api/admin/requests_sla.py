@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException
 from datetime import datetime
 
 from app.db.mongo import requests_collection, sla_rules_collection, subcategory_collection, team_collection
-from app.models.sla_policy import SlaPolicy
+from app.models.sla_policy import SLAPolicyCreate
 
 router = APIRouter(
     prefix="/admin/requests",
@@ -16,7 +16,7 @@ async def create_sla(request_id: str, payload: dict):
         raise HTTPException(404, "Request not found")
 
     # 1️⃣ Extract request data
-    zone = req["location"]["zone"]
+    zone = req["zone_name"]
     category = req["category"]
     subcategory = req["sub_category"]
 
@@ -46,7 +46,7 @@ async def create_sla(request_id: str, payload: dict):
         raise HTTPException(400, "Team does not support this zone")
 
     # 5️⃣ Build SLA
-    sla = SlaPolicy(
+    sla = SLAPolicyCreate(
         name=f"SLA for {request_id}",
         zone=zone,
         priority=priority,
@@ -74,7 +74,7 @@ async def create_sla(request_id: str, payload: dict):
 
 
 @router.put("/{request_id}/sla")
-async def update_sla(request_id: str, payload: SlaPolicy):
+async def update_sla(request_id: str, payload: SLAPolicyCreate):
 
     req = await requests_collection.find_one({"request_id": request_id})
     if not req:
@@ -95,7 +95,7 @@ async def update_sla(request_id: str, payload: SlaPolicy):
     return {"ok": True}
 
 
-@router.get("/{request_id}/sla", response_model=SlaPolicy)
+@router.get("/{request_id}/sla", response_model=SLAPolicyCreate)
 async def get_sla(request_id: str):
     req = await requests_collection.find_one({"request_id": request_id})
     if not req or "sla_policy" not in req:

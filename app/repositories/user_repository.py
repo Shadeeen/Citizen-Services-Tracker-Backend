@@ -1,3 +1,5 @@
+import datetime as datetime
+
 from bson import ObjectId
 
 class UserRepository:
@@ -23,3 +25,16 @@ class UserRepository:
             }
 
         return users
+
+def verify_citizen(citizens_col, citizen_id: ObjectId):
+    result = citizens_col.update_one(
+        {"_id": citizen_id},
+        {
+            "$set": {
+                "verification.state": "verified",
+                "verification.method": "otp_stub",
+                "verification.verified_at": datetime.utcnow()
+            }
+        }
+    )
+    return result.modified_count == 1

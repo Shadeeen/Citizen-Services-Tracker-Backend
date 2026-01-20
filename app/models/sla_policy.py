@@ -1,28 +1,63 @@
+from __future__ import annotations
+
 from datetime import datetime
 from typing import List, Optional
-from pydantic import BaseModel, Field
 
-class EscalationStep(BaseModel):
-    after_hours: int
+from pydantic import Field
+
+from app.models.common import CSTBaseModel, PyObjectId
+
+
+class EscalationStep(CSTBaseModel):
+    after_hours: float
     action: str
 
 
-class SlaPolicy(BaseModel):
+class SLAPolicy(CSTBaseModel):
+    id: Optional[PyObjectId] = Field(None, alias="_id")
+
+    # 🔗 links
+    request_id: str
+    team_id: PyObjectId
+
+    # display
     name: str
 
+    # matching rules
     zone: str
-    priority: str
-    category: str
-    subcategory: str
+    priority: str = Field(..., pattern="^(P1|P2|P3|P4)$")
+    category_code: str
+    subcategory_code: str
 
-    target_hours: int
-    breach_hours: int
+    # sla logic
+    target_hours: float
+    breach_threshold_hours: float
+    escalation_steps: List[EscalationStep] = Field(default_factory=list)
 
-    assigned_team_id: str
+    # lifecycle
+    active: bool = True
+    created_at: datetime
+    updated_at: datetime
 
-    escalation_steps: List[EscalationStep] = []
 
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+class SLAPolicyCreate(CSTBaseModel):
+    request_id: str
+    team_id: PyObjectId
 
-    class Config:
-        populate_by_name = True
+    name: str
+    zone: str
+    priority: str = Field(..., pattern="^(P1|P2|P3|P4)$")
+    category_code: str
+    subcategory_code: str
+
+    target_hours: float
+    breach_threshold_hours: float
+    escalation_steps: List[EscalationStep] = Field(default_factory=list)
+
+
+class SLAPolicyUpdate(CSTBaseModel):
+    name: Optional[str] = None
+    target_hours: Optional[float] = None
+    breach_threshold_hours: Optional[float] = None
+    escalation_steps: Optional[List[EscalationStep]] = None
+    active: Optional[bool] = None
