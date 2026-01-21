@@ -4,23 +4,31 @@ from typing import Any
 
 from bson import ObjectId
 from pydantic import BaseModel
+from pydantic import BaseModel
+
+
+from bson import ObjectId
+from pydantic import GetCoreSchemaHandler
+from pydantic_core import core_schema
 
 
 class PyObjectId(ObjectId):
     @classmethod
-    def __get_validators__(cls):
-        yield cls.validate
+    def __get_pydantic_core_schema__(
+        cls,
+        source_type,
+        handler: GetCoreSchemaHandler,
+    ):
+        return core_schema.no_info_plain_validator_function(cls.validate)
 
     @classmethod
-    def validate(cls, value: Any) -> ObjectId:
-        if isinstance(value, ObjectId):
-            return value
-        if not ObjectId.is_valid(value):
-            raise ValueError("Invalid ObjectId")
-        return ObjectId(value)
+    def validate(cls, v):
+        if isinstance(v, ObjectId):
+            return v
+        if isinstance(v, str) and ObjectId.is_valid(v):
+            return ObjectId(v)
+        raise ValueError("Invalid ObjectId")
 
-
-from pydantic import BaseModel
 
 class CSTBaseModel(BaseModel):
     model_config = {

@@ -48,18 +48,65 @@ audit_service = AuditService(AuditRepository(audit_collection))
 router = APIRouter(prefix="/admin/teams", tags=["Admin Teams"])
 
 
-@router.get("", response_model=list[TeamOut])
-async def list_teams():
+@router.get("/by-zone/{zone}", response_model=list[TeamOut])
+async def list_teams_by_zone(zone: str):
     teams = await team_collection.find(
-        {"deleted": False}
+        {
+            "deleted": False,
+            "active": True,
+            "$or": [
+                {"zones": zone},                 # team has this zone
+                {"zones": {"$exists": False}},   # no zones field
+                {"zones": {"$size": 0}},         # empty zones
+            ]
+        }
     ).to_list(None)
 
     for t in teams:
         t["id"] = str(t["_id"])
         del t["_id"]
+        t["members"] = await resolve_users(t.get("members", []))
 
-        # 🔒 ENSURE MEMBERS ARE STRINGS
-        t["members"] = [str(uid) for uid in t.get("members", [])]
+    return teams
+
+
+
+
+
+@router.get("", response_model=list[TeamOut])
+async def list_teams():
+    teams = await team_collection.find({"deleted": {"$ne": True}}).to_list(200)
+
+    # collect all member IDs (strings)
+    user_ids = {
+        uid
+        for t in teams
+        for uid in (t.get("members") or [])
+        if ObjectId.is_valid(uid)
+    }
+
+    users = await users_collection.find(
+        {"_id": {"$in": [ObjectId(uid) for uid in user_ids]}, "deleted": {"$ne": True}},
+        {"full_name": 1, "contacts.email": 1}
+    ).to_list(None)
+
+    users_map = {str(u["_id"]): u for u in users}
+
+    for t in teams:
+        # ✅ FIX 1: map mongo _id -> id (required by TeamOut)
+        t["id"] = str(t["_id"])
+        del t["_id"]
+
+        # ✅ FIX 2: resolve members to objects with email/full_name
+        t["members"] = [
+            {
+                "id": uid,
+                "email": (users_map.get(uid, {}).get("contacts") or {}).get("email"),
+                "full_name": users_map.get(uid, {}).get("full_name"),
+            }
+            for uid in (t.get("members") or [])
+            if uid in users_map
+        ]
 
     return teams
 
@@ -102,6 +149,8 @@ async def create_team(data: TeamCreate):
         }
 
     })
+
+    doc["members"] = await resolve_users(doc["members"])
 
     doc["id"] = team_id
     return doc
@@ -166,7 +215,7 @@ async def update_team(team_id: str, body: TeamUpdate):
     })
 
     after["id"] = str(after["_id"])
-    after["members"] = [str(m) for m in after.get("members", [])]
+    after["members"] = await resolve_users(after.get("members", []))
     del after["_id"]
 
     return after
@@ -180,6 +229,9 @@ async def toggle_team(team_id: str):
 
     prev = t["active"]
     t = await team_service.toggle(team_id)
+
+    # 🔴 FIX: resolve members
+    t["members"] = await resolve_users(t.get("members", []))
 
     await audit_service.log_event({
         "time": datetime.utcnow(),
@@ -200,6 +252,7 @@ async def toggle_team(team_id: str):
     })
 
     return t
+
 
 
 @router.delete("/{team_id}")

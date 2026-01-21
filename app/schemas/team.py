@@ -8,6 +8,12 @@ class TeamBase(BaseModel):
     skills: List[str] = []
 
 
+class UserRef(BaseModel):
+    id: str
+    email: str | None = None
+    full_name: str | None = None
+
+
 class TeamCreate(TeamBase):
     members: List[str] = []  # ✅ IDS ONLY
 
@@ -26,5 +32,5 @@ class TeamOut(BaseModel):
     shift: str
     zones: list[str]
     skills: list[str]
-    members: list[str]   # ✅ IDS ONLY
+    members: list[UserRef]   # ✅ IDS ONLY
     active: bool

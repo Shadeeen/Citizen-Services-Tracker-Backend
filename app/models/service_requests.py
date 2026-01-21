@@ -43,7 +43,7 @@ class LocationInput(CSTBaseModel):
 
 
 class Assignment(CSTBaseModel):
-    assigned_team_id: Optional[PyObjectId] = None
+    team_id: Optional[PyObjectId] = None
     assigned_agent_id: Optional[PyObjectId] = None
 
 

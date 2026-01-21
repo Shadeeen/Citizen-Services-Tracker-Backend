@@ -90,14 +90,19 @@ class UserUpdate(BaseModel):
 class UserOut(BaseModel):
     id: str
     full_name: str
-    verification: VerificationOut = Field(default_factory=VerificationOut)
-    contacts: ContactsOut
-    preferences: PreferencesOut = Field(default_factory=PreferencesOut)
-    address: AddressOut = Field(default_factory=AddressOut)
-    stats: StatsOut = Field(default_factory=StatsOut)
 
-    # keep existing fields so you don't break other parts
-    role: UserRole
+    # ✅ ROOT EMAIL (always present)
+    email: Optional[str] = None
+
+    # ✅ CONTACTS ARE OPTIONAL
+    contacts: Optional[Dict[str, Any]] = None
+
+    verification: Optional[Dict[str, Any]] = None
+    preferences: Optional[Dict[str, Any]] = None
+    address: Optional[Dict[str, Any]] = None
+    stats: Optional[Dict[str, Any]] = None
+
+    role: str
     is_active: bool
     created_at: datetime
 

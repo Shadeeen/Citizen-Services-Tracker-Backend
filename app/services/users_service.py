@@ -46,24 +46,20 @@ async def list_users(q: str | None = None, role: str | None = None, active: bool
     return [to_user_out(d) for d in rows]
 
 
-async def create_user(users_col, body):
-    """
-    Create user with NEW structure:
-    - contacts.email / contacts.phone
-    - verification, preferences ...
-    """
+async def create_user(body):
     now = datetime.utcnow()
 
     email_norm = _email_norm(body.email)
     phone_norm = _phone_norm(getattr(body, "phone", None))
 
-    # prevent duplicates (works even without unique index)
-    existing = await users_col.find_one({"contacts.email": email_norm, "deleted": {"$ne": True}})
+    existing = await users_collection.find_one(
+        {"contacts.email": email_norm, "deleted": {"$ne": True}}
+    )
     if existing:
         return None
 
     doc = {
-        "full_name": getattr(body, "full_name", None) or getattr(body, "name", None),
+        "full_name": body.full_name,
         "verification": {"state": "unverified"},
         "contacts": {"email": email_norm, "phone": phone_norm},
         "preferences": {
@@ -72,9 +68,9 @@ async def create_user(users_col, body):
             "notifications": {"on_status_change": True, "on_resolution": True},
         },
         "address": {
-            "neighborhood": getattr(body, "neighborhood", None),
-            "city": getattr(body, "city", None),
-            "zone_id": getattr(body, "zone_id", None),
+            "neighborhood": None,
+            "city": None,
+            "zone_id": None,
         },
         "stats": {"total_requests": 0},
         "role": body.role,
@@ -84,13 +80,12 @@ async def create_user(users_col, body):
         "deleted": False,
     }
 
-    try:
-        res = await users_col.insert_one(doc)
-    except DuplicateKeyError:
-        return None
-
+    res = await users_collection.insert_one(doc)
     doc["_id"] = res.inserted_id
-    return doc
+
+    # ✅ RETURN USEROUT — NOT RAW DOC
+    return to_user_out(doc)
+
 
 
 async def get_user(user_id: str):
@@ -156,8 +151,14 @@ async def toggle_user_active(user_id: str):
 
 
 async def delete_user(user_id: str):
-    res = await users_collection.update_one({"_id": ObjectId(user_id)}, {"$set": {"deleted": True}})
+    from app.db.mongo import users_collection
+
+    res = await users_collection.update_one(
+        {"_id": ObjectId(user_id)},
+        {"$set": {"deleted": True}}
+    )
     return res.modified_count == 1
+
 
 
 # -------------------------
@@ -185,3 +186,14 @@ async def login(email: str, password: str):
         return None
 
     return doc
+
+from app.db.mongo import team_collection
+
+async def remove_user_from_teams(user_id: str):
+    """
+    Remove user from all teams.members arrays
+    """
+    await team_collection.update_many(
+        {"members": user_id},
+        {"$pull": {"members": user_id}}
+    )

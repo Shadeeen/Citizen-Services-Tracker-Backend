@@ -1,12 +1,16 @@
 from bson import ObjectId
+from datetime import datetime
+
 
 def serialize_mongo(obj):
     """
-    Recursively convert Mongo ObjectId to str
-    so FastAPI can JSON-encode safely.
+    Recursively convert MongoDB objects to JSON-safe values
     """
     if isinstance(obj, ObjectId):
         return str(obj)
+
+    if isinstance(obj, datetime):
+        return obj.isoformat()
 
     if isinstance(obj, list):
         return [serialize_mongo(i) for i in obj]
@@ -15,3 +19,4 @@ def serialize_mongo(obj):
         return {k: serialize_mongo(v) for k, v in obj.items()}
 
     return obj
+

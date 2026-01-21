@@ -54,7 +54,7 @@ async def create_service_request(body: CreateServiceRequestBody):
         },
         "address_hint": body.address_hint,
         "zone_name": body.zone_name,
-        "assignment": {"assigned_team_id": None},
+        "assignment": {"team_id": None},
         "evidence": []
     }
 

@@ -10,9 +10,13 @@ from app.services.users_service import (
     toggle_user_active,
     delete_user,
 )
-from app.db.mongo import audit_collection
+from app.db.mongo import audit_collection, users_collection
 from app.repositories.audit_repository import AuditRepository
 from app.services.audit_service import AuditService
+from app.db.mongo import team_collection
+from bson import ObjectId
+
+from app.utils.mongo import serialize_mongo
 
 audit_repo = AuditRepository(audit_collection)
 audit_service = AuditService(audit_repo)
@@ -28,6 +32,7 @@ async def get_all(
     q: str | None = None,
     role: str | None = None,
     active: bool | None = None,
+
 ):
     return await list_users(q=q, role=role, active=active)
 
@@ -51,11 +56,11 @@ async def create(data: UserCreate):
         "entity": {
             "type": "user",
             "id": u["id"],
-            "email": u["email"]
+            "email": u["contacts"]["email"]
         },
-        "message": f"Added user ({u['email']})",
+        "message": f"Added user ({u['contacts']['email']})",
         "meta": {
-            "email": u["email"],
+            "email": u["contacts"]["email"],
             "role": u["role"],
             "is_active": u["is_active"]
         }
@@ -139,7 +144,7 @@ async def toggle(user_id: str):
         "entity": {
             "type": "user",
             "id": user_id,
-            "email": old["email"]
+            "email": old["email"]  # ✅ CORRECT
         },
         "message": f"{'Enabled' if u['is_active'] else 'Disabled'} user ({old['email']})",
         "meta": {
@@ -160,10 +165,19 @@ async def remove(user_id: str):
     if not old:
         raise HTTPException(404, "User not found")
 
+    # 1️⃣ Soft-delete user
     ok = await delete_user(user_id)
     if not ok:
         raise HTTPException(404, "User not found")
 
+    # 2️⃣ REMOVE USER FROM ALL TEAMS (if staff/admin)
+    if old["role"] in ("staff", "admin", "office_employee"):
+        await team_collection.update_many(
+            {"members": user_id},
+            {"$pull": {"members": user_id}}
+        )
+
+    # 3️⃣ Audit log
     await audit_service.log_event({
         "time": datetime.utcnow(),
         "type": "user.delete",
@@ -174,13 +188,59 @@ async def remove(user_id: str):
         "entity": {
             "type": "user",
             "id": user_id,
-            "email": old["email"]
+            "email": old["contacts"]["email"]
         },
-        "message": f"Deleted user ({old['email']})",
+        "message": f"Deleted user ({old['contacts']['email']})",
         "meta": {
-            "email": old["email"],
             "role": old["role"]
         }
     })
 
     return {"success": True}
+
+@router.post("/{user_id}/verify", response_model=UserOut)
+async def verify_user(user_id: str):
+    user = await users_collection.find_one({"_id": ObjectId(user_id)})
+    if not user:
+        raise HTTPException(404, "User not found")
+
+    if user.get("verification", {}).get("state") == "verified":
+        user["id"] = str(user["_id"])
+        del user["_id"]
+        return user
+
+    await users_collection.update_one(
+        {"_id": ObjectId(user_id)},
+        {
+            "$set": {
+                "verification.state": "verified",
+                "verification.verified_at": datetime.utcnow()
+            }
+        }
+    )
+
+    await audit_service.log_event({
+        "time": datetime.utcnow(),
+        "type": "user.verify",
+        "actor": {
+            "role": "admin",
+            "email": "admin@system"
+        },
+        "entity": {
+            "type": "user",
+            "id": user_id
+        },
+        "message": f"User verified ({user.get('full_name')})",
+        "meta": {
+            "email": user.get("contacts", {}).get("email")
+        }
+    })
+
+    # 🔴 FIX HERE
+    user["verification"]["state"] = "verified"
+    user["verification"]["verified_at"] = datetime.utcnow()
+
+    user["id"] = str(user["_id"])
+    del user["_id"]
+
+    return user
