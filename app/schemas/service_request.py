@@ -18,13 +18,22 @@ class CreateServiceRequestBody(BaseModel):
     tags: List[str] = Field(default_factory=list)
     location: GeoPointIn
     address_hint: Optional[str] = None
-    zone_name: str   # مثل ZONE-DT-01
-
-
-from pydantic import BaseModel
-from typing import Optional
+    zone_name: str
 
 class CreateServiceRequestResponse(BaseModel):
     request_id: str
     status: str
     sla_hint: Optional[str] = None
+
+class UpdateServiceRequestBody(BaseModel):
+    category: Optional[str] = None
+    sub_category: Optional[str] = None
+    description: Optional[str] = None
+    tags: Optional[List[str]] = None
+    location: Optional[GeoPointIn] = None
+    address_hint: Optional[str] = None
+    zone_name: Optional[str] = None
+
+class CitizenFeedbackIn(BaseModel):
+    stars: int = Field(ge=1, le=5)
+    comment: Optional[str] = None
