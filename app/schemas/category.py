@@ -29,3 +29,8 @@ class SubcategoryPatch(BaseModel):
     name: Optional[str] = None
     priority: Optional[Priority] = None
     active: Optional[bool] = None
+
+
+class CategoryUpdate(BaseModel):
+    name: Optional[str] = None
+    active: Optional[bool] = None

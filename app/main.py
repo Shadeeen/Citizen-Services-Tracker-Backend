@@ -10,6 +10,7 @@ from app.api.admin import categories, subcategories
 from app.api.admin.requests_sla import router as requests_sla_router
 from app.api.admin.requests import router as requests_router
 from app.api.admin.sla_rules import router as sla_rules_router
+from app.api.admin.dashboard import router as dashboard_router
 
 from app.api.auth import router as auth_router
 from app.api.service_requests import router as service_requests_router
@@ -44,6 +45,8 @@ app.include_router(subcategories.router)
 app.include_router(requests_sla_router)
 app.include_router(requests_router)
 app.include_router(sla_rules_router)
+app.include_router(dashboard_router)
+
 
 # service requests (you)
 app.include_router(service_requests_router)

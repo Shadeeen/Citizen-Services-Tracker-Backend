@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from datetime import datetime
 
 from app.db.mongo import get_db
-from app.schemas.category import CategoryCreate, CategoryResponse
+from app.schemas.category import CategoryCreate, CategoryResponse, CategoryUpdate
 from app.repositories.audit_repository import AuditRepository
 from app.services.audit_service import AuditService
 from app.db.mongo import audit_collection
@@ -112,3 +112,67 @@ async def delete_category(category_id: str, db=Depends(get_db)):
     })
 
     return {"success": True}
+
+@router.patch("/{category_id}", response_model=CategoryResponse)
+async def update_category(
+    category_id: str,
+    data: CategoryUpdate,
+    db=Depends(get_db)
+):
+    if not ObjectId.is_valid(category_id):
+        raise HTTPException(status_code=400, detail="Invalid category id")
+
+    c = await db.category.find_one({
+        "_id": ObjectId(category_id),
+        "deleted": False
+    })
+
+    if not c:
+        raise HTTPException(status_code=404, detail="Category not found")
+
+    update_fields = {}
+
+    if data.name is not None:
+        update_fields["name"] = data.name
+
+    if data.active is not None:
+        update_fields["active"] = data.active
+
+    if not update_fields:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    update_fields["updated_at"] = datetime.utcnow()
+
+    await db.category.update_one(
+        {"_id": ObjectId(category_id)},
+        {"$set": update_fields}
+    )
+
+    # 🔍 AUDIT LOG
+    await audit_service.log_event({
+        "time": datetime.utcnow(),
+        "type": "category.update",
+        "actor": {
+            "role": "admin",
+            "email": "admin@system",
+        },
+        "entity": {
+            "type": "category",
+            "id": category_id,
+        },
+        "message": f"Category updated ({c['name']})",
+        "meta": update_fields
+    })
+
+    # return updated category
+    sub_count = await db.subcategory.count_documents({
+        "category_id": category_id,
+        "deleted": False
+    })
+
+    return {
+        "id": category_id,
+        "name": update_fields.get("name", c["name"]),
+        "active": update_fields.get("active", c.get("active", True)),
+        "subcategories_count": sub_count
+    }
