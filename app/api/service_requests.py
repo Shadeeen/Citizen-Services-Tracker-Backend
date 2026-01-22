@@ -15,6 +15,12 @@ from app.schemas.service_request import (
     UpdateServiceRequestBody,
     CitizenFeedbackIn,
 )
+from app.db.mongo import audit_collection
+from app.repositories.audit_repository import AuditRepository
+from app.services.audit_service import AuditService
+from app.utils.mongo import serialize_mongo  # optional but useful
+
+audit_service = AuditService(AuditRepository(audit_collection))
 
 router = APIRouter(prefix="/service-requests", tags=["Service Requests"])
 
@@ -177,6 +183,40 @@ async def create_service_request(body: CreateServiceRequestBody):
 
         try:
             await service_requests_collection.insert_one(doc)
+
+            # ✅ AUDIT: request created
+            actor = {
+                "role": "citizen" if not body.citizen_ref.anonymous else "anonymous",
+                # you can change this later if you have email/phone
+                "email": "citizen@system" if not body.citizen_ref.anonymous else "anonymous@system",
+            }
+
+            await audit_service.log_event({
+                "time": datetime.utcnow(),
+                "type": "request.create",
+                "actor": actor,
+                "entity": {
+                    "type": "service_request",
+                    "id": request_id
+                },
+                "message": f"Service request created: {request_id}",
+                "meta": {
+                    "anonymous": body.citizen_ref.anonymous,
+                    "citizen_id": str(citizen_id) if citizen_id else None,
+                    "contact_channel": body.citizen_ref.contact_channel,
+                    "category": body.category,
+                    "sub_category": body.sub_category,
+                    "zone_name": body.zone_name,
+                    "address_hint": body.address_hint,
+                    # IMPORTANT: your DB stores [lng, lat]
+                    "location": {
+                        "lng": body.location.lng,
+                        "lat": body.location.lat
+                    },
+                    "status": "new",
+                    "priority": "P1",
+                }
+            })
 
             return CreateServiceRequestResponse(
                 request_id=request_id,
