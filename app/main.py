@@ -15,10 +15,20 @@ from app.api.admin.dashboard import router as dashboard_router
 from app.api.auth import router as auth_router
 from app.api.service_requests import router as service_requests_router
 from app.api.admin.tiles import router as tiles_router
+from app.api.admin.analytics import router as analytics_router
 
+from app.api.admin.geo_feeds import router as geo_feeds_router
+from pathlib import Path
+from fastapi.staticfiles import StaticFiles
 
 
 app = FastAPI(title="CST Backend (MongoDB)")
+
+UPLOAD_DIR = Path("uploads")
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+# Now GET /uploads/<filename> will serve the file from ./uploads/
+app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 
 app.add_middleware(
     CORSMiddleware,
@@ -41,13 +51,15 @@ app.include_router(auth_router)
 app.include_router(tiles_router)
 
 # admin routers (partner)
-app.include_router(analytics.router)
+app.include_router(analytics_router)
 app.include_router(categories.router)
 app.include_router(subcategories.router)
 app.include_router(requests_sla_router)
 app.include_router(requests_router)
 app.include_router(sla_rules_router)
 app.include_router(dashboard_router)
+app.include_router(geo_feeds_router)
+
 
 
 # service requests (you)

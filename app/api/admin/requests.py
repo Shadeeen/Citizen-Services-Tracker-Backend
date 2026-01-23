@@ -35,6 +35,7 @@ def _compute_state(elapsed_min, target_hours, breach_hours):
     if elapsed_min >= target_min:
         return "at_risk"
     return "on_track"
+
 @router.get("/{request_id}/sla-monitoring")
 async def get_sla_monitoring(request_id: str):
     req = await requests_collection.find_one({"request_id": request_id})
