@@ -72,6 +72,33 @@ class UserCreate(BaseModel):
         populate_by_name = True  # يخلي alias شغال (Pydantic v2)
 
 
+
+from pydantic import BaseModel, EmailStr, Field, root_validator
+from typing import Optional
+import re
+
+class UserCreate2(BaseModel):
+    full_name: str
+    email: EmailStr
+    password: str
+    role: str
+    phone: Optional[str] = Field(default=None, description="E.164 or local format")
+    neighborhood: Optional[str] = None
+    city: Optional[str] = None
+    zone_id: Optional[str] = None
+
+    @root_validator(pre=True)
+    def accept_name_alias(cls, values):
+        # accept "name" from mobile if "full_name" not provided
+        if "full_name" not in values and "name" in values:
+            values["full_name"] = values["name"]
+        return values
+
+    @staticmethod
+    def _is_valid_phone(p: str) -> bool:
+        return bool(re.fullmatch(r"^\+?[0-9]{8,15}$", p))
+
+
 class UserUpdate(BaseModel):
     full_name: Optional[str] = None
     role: Optional[UserRole] = None

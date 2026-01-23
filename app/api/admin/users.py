@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from datetime import datetime
 
-from app.schemas.user import UserCreate, UserUpdate, UserOut
+from app.schemas.user import UserCreate, UserUpdate, UserOut, UserCreate2
 from app.services.users_service import (
     list_users,
     create_user,
@@ -41,7 +41,7 @@ async def get_all(
 # CREATE USER
 # ========================
 @router.post("", response_model=UserOut)
-async def create(data: UserCreate):
+async def create(data: UserCreate2):
     u = await create_user(data)
     if not u:
         raise HTTPException(409, "Email already exists")
@@ -126,35 +126,35 @@ async def patch(user_id: str, body: UserUpdate):
 # ========================
 # ENABLE / DISABLE USER
 # ========================
-@router.post("/{user_id}/toggle", response_model=UserOut)
-async def toggle(user_id: str):
-    old = await get_user(user_id)
-    if not old:
-        raise HTTPException(404, "User not found")
-
-    u = await toggle_user_active(user_id)
-
-    await audit_service.log_event({
-        "time": datetime.utcnow(),
-        "type": "user.toggle",
-        "actor": {
-            "role": "admin",
-            "email": "admin@system"
-        },
-        "entity": {
-            "type": "user",
-            "id": user_id,
-            "email": old["email"]  # ✅ CORRECT
-        },
-        "message": f"{'Enabled' if u['is_active'] else 'Disabled'} user ({old['email']})",
-        "meta": {
-            "from": old["is_active"],
-            "to": u["is_active"]
-        }
-    })
-
-    return u
-
+# @router.post("/{user_id}/toggle", response_model=UserOut)
+# async def toggle(user_id: str):
+#     old = await get_user(user_id)
+#     if not old:
+#         raise HTTPException(404, "User not found")
+#
+#     u = await toggle_user_active(user_id)
+#
+#     await audit_service.log_event({
+#         "time": datetime.utcnow(),
+#         "type": "user.toggle",
+#         "actor": {
+#             "role": "admin",
+#             "email": "admin@system"
+#         },
+#         "entity": {
+#             "type": "user",
+#             "id": user_id,
+#             "email": old["email"]  # ✅ CORRECT
+#         },
+#         "message": f"{'Enabled' if u['is_active'] else 'Disabled'} user ({old['email']})",
+#         "meta": {
+#             "from": old["is_active"],
+#             "to": u["is_active"]
+#         }
+#     })
+#
+#     return u
+#
 
 # ========================
 # DELETE USER
@@ -198,52 +198,7 @@ async def remove(user_id: str):
 
     return {"success": True}
 
-# @router.post("/{user_id}/verify", response_model=UserOut)
-# async def verify_user(user_id: str):
-#     user = await users_collection.find_one({"_id": ObjectId(user_id)})
-#     if not user:
-#         raise HTTPException(404, "User not found")
-#
-#     if user.get("verification", {}).get("state") == "verified":
-#         user["id"] = str(user["_id"])
-#         del user["_id"]
-#         return user
-#
-#     await users_collection.update_one(
-#         {"_id": ObjectId(user_id)},
-#         {
-#             "$set": {
-#                 "verification.state": "verified",
-#                 "verification.verified_at": datetime.utcnow()
-#             }
-#         }
-#     )
-#
-#     await audit_service.log_event({
-#         "time": datetime.utcnow(),
-#         "type": "user.verify",
-#         "actor": {
-#             "role": "admin",
-#             "email": "admin@system"
-#         },
-#         "entity": {
-#             "type": "user",
-#             "id": user_id
-#         },
-#         "message": f"User verified ({user.get('full_name')})",
-#         "meta": {
-#             "email": user.get("contacts", {}).get("email")
-#         }
-#     })
-#
-#     # 🔴 FIX HERE
-#     user["verification"]["state"] = "verified"
-#     user["verification"]["verified_at"] = datetime.utcnow()
-#
-#     user["id"] = str(user["_id"])
-#     del user["_id"]
-#
-#     return user
+
 @router.post("/{user_id}/verify", response_model=UserOut)
 async def verify_user(user_id: str):
     oid = ObjectId(user_id)

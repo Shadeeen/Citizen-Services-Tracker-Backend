@@ -103,24 +103,44 @@ class SLAPolicy(CSTBaseModel):
     updated_at: datetime
 
 
-class SLAPolicyCreate(CSTBaseModel):
-    request_id: str
-    team_id: Optional[PyObjectId] = None   # ✅ optional on create
+# class SLAPolicyCreate(CSTBaseModel):
+#     request_id: str
+#     team_id: Optional[PyObjectId] = None   # ✅ optional on create
+#
+#     name: str
+#     zone: str
+#     priority: str = Field(..., pattern="^(P1|P2|P3|P4)$")
+#     category_code: str
+#     subcategory_code: str
+#
+#     target_hours: float
+#     breach_threshold_hours: float
+#     escalation_steps: List[EscalationStep] = Field(default_factory=list)
 
+from pydantic import BaseModel
+from bson import ObjectId
+from typing import Optional, Any
+
+class SLAPolicyCreate(BaseModel):
+    request_id: str
     name: str
     zone: str
-    priority: str = Field(..., pattern="^(P1|P2|P3|P4)$")
+    priority: str
     category_code: str
     subcategory_code: str
-
     target_hours: float
-    breach_threshold_hours: float
-    escalation_steps: List[EscalationStep] = Field(default_factory=list)
+    breach_threshold_hours: float | None = None
+    team_id: Optional[ObjectId] = None
+    escalation_steps: list[dict] = []
+
+    class Config:
+        arbitrary_types_allowed = True
+        json_encoders = {ObjectId: str}
 
 
-class SLAPolicyUpdate(CSTBaseModel):
-    # ✅ allow assigning team later
-    team_id: Optional[PyObjectId] = None
+class SLAPolicyUpdate(BaseModel):
+    # ✅ frontend sends string ObjectId or "" -> your endpoint normalizes it
+    team_id: Optional[str] = None
 
     name: Optional[str] = None
     target_hours: Optional[float] = None

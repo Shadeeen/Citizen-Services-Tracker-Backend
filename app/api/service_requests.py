@@ -833,6 +833,22 @@ async def staff_update_status(
         upsert=True
     )
 
+    # ✅ AUDIT
+    await audit_service.log_event(
+        {
+            "time": now,
+            "type": "request.status_update",
+            "actor": {"role": "staff", "id": x_staff_id},
+            "entity": {"type": "request", "id": request_id},
+            "message": f"Staff changed request status {current} → {ns}",
+            "meta": {
+                "from": current,
+                "to": ns,
+                "timestamps_set": [k for k in sets.keys() if k.startswith("timestamps.")],
+            },
+        }
+    )
+
     return {"ok": True, "status": ns}
 
 
@@ -877,5 +893,19 @@ async def staff_close_direct(
         {"$push": {"event_stream": {"type": "closed", "at": now}}},
         upsert=True
     )
+
+    # ✅ AUDIT
+    await audit_service.log_event(
+        {
+            "time": now,
+            "type": "request.close",
+            "actor": {"role": "staff", "id": x_staff_id},
+            "entity": {"type": "request", "id": request_id},
+            "message": "Staff closed anonymous request directly",
+            "meta": {"was_anonymous": True},
+        }
+    )
+
+
 
     return {"ok": True, "status": "closed"}

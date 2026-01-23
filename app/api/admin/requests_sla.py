@@ -205,7 +205,7 @@ async def create_sla(request_id: str, payload: dict):
     now = datetime.utcnow()
     new_status = "assigned" if team_oid else "triaged"
 
-    sla_dump = sla.model_dump(by_alias=True)
+    sla_dump = sla.dict(by_alias=True)
     sla_dump["team_id"] = team_oid  # keep in sync
 
     set_doc = {
@@ -228,7 +228,8 @@ async def create_sla(request_id: str, payload: dict):
     req = await requests_collection.find_one({"request_id": request_id})
     await _upsert_performance_log(req)
 
-    meta = {"sla": sla.model_dump(by_alias=True)}
+    meta = {"sla": sla.dict(by_alias=True)}
+
     if team:
         meta["team"] = {
             "id": str(team["_id"]),
