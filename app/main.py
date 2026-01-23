@@ -14,6 +14,8 @@ from app.api.admin.dashboard import router as dashboard_router
 
 from app.api.auth import router as auth_router
 from app.api.service_requests import router as service_requests_router
+from app.api.admin.tiles import router as tiles_router
+
 
 
 app = FastAPI(title="CST Backend (MongoDB)")
@@ -36,7 +38,7 @@ app.include_router(audit_router)
 app.include_router(users_router)
 app.include_router(teams_router)
 app.include_router(auth_router)
-
+app.include_router(tiles_router)
 
 # admin routers (partner)
 app.include_router(analytics.router)

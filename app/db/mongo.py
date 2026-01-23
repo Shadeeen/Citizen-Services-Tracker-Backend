@@ -12,6 +12,7 @@ team_collection=db["teams"]
 cat_collection = db["category"]
 subcategory_collection = db["subcategory"]
 service_requests_collection = db["service_requests"]
+performance_logs_collection = db["performance_logs"]
 
 def get_db():
     return db
