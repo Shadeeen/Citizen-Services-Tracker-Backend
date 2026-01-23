@@ -1,5 +1,5 @@
 # app/api/service_requests.py
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Query, Header
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Query, Header, Request
 from datetime import datetime
 from bson import ObjectId
 from pathlib import Path
@@ -8,7 +8,7 @@ import uuid
 from pymongo.errors import DuplicateKeyError
 from pymongo import ReturnDocument
 
-from app.db.mongo import service_requests_collection, db
+from app.db.mongo import service_requests_collection, db, users_collection, team_collection
 from app.schemas.service_request import (
     CreateServiceRequestBody,
     CreateServiceRequestResponse,
@@ -31,6 +31,91 @@ counters_collection = db["counters"]
 # -------------------------
 # Helpers
 # -------------------------
+
+def _dt(v):
+    if isinstance(v, datetime):
+        return v
+    if isinstance(v, str):
+        try:
+            return datetime.fromisoformat(v.replace("Z", "+00:00"))
+        except:
+            return None
+    return None
+
+
+def _minutes_between(a: datetime, b: datetime) -> int:
+    return int(max(0, (b - a).total_seconds() // 60))
+
+
+def _hours_between(a: datetime, b: datetime) -> float:
+    return max(0.0, (b - a).total_seconds() / 3600.0)
+
+
+def _compute_kpis(sr: dict) -> dict:
+    ts = sr.get("timestamps") or {}
+    created_at = _dt(ts.get("created_at")) or _dt(sr.get("created_at")) or datetime.utcnow()
+    triaged_at = _dt(ts.get("triaged_at")) or created_at
+
+    status = (sr.get("status") or "").lower()
+    end_at = None
+    if status == "resolved":
+        end_at = _dt(ts.get("resolved_at"))
+    elif status == "closed":
+        end_at = _dt(ts.get("closed_at")) or _dt(ts.get("updated_at"))
+
+    now = datetime.utcnow()
+    current = end_at or now
+
+    sla_policy = sr.get("sla_policy") or {}
+    target_h = float(sla_policy.get("target_hours") or 0)
+    breach_h = float(sla_policy.get("breach_threshold_hours") or target_h)
+
+    elapsed_h = _hours_between(triaged_at, current)
+
+    if breach_h > 0 and elapsed_h >= breach_h:
+        sla_state = "breached"
+    elif target_h > 0 and elapsed_h >= target_h:
+        sla_state = "at_risk"
+    else:
+        sla_state = "on_track"
+
+    resolution_minutes = None
+    if end_at is not None:
+        resolution_minutes = _minutes_between(triaged_at, end_at)
+
+    # keep existing feedback if you already stored it
+    return {
+        "resolution_minutes": resolution_minutes,
+        "sla_target_hours": target_h,
+        "sla_state": sla_state,
+        "escalation_count": 0,  # until you implement escalations
+        "breach_reason": None,  # until you implement breach reason
+        "computed_at": now,
+    }
+
+
+async def _upsert_perf_log(sr: dict):
+    sr_oid = sr["_id"]
+    now = datetime.utcnow()
+    kpis = _compute_kpis(sr)
+
+    await performance_logs_collection.update_one(
+        {"request_id": sr_oid},
+        {
+            "$setOnInsert": {
+                "request_id": sr_oid,
+                "event_stream": [],
+                "created_at": now,
+            },
+            "$set": {
+                "computed_kpis": kpis,
+                "updated_at": now,
+            },
+        },
+        upsert=True,
+    )
+
+
 def _make_request_id(year: int, seq: int) -> str:
     return f"CST-{year}-{seq:04d}"
 
@@ -42,6 +127,14 @@ def _parse_citizen_id(x_citizen_id: str | None) -> ObjectId | None:
     if not ObjectId.is_valid(x_citizen_id):
         return None
     return ObjectId(x_citizen_id)
+
+def _parse_oid(x: str | None) -> ObjectId | None:
+    if not x:
+        return None
+    x = x.strip()
+    if not ObjectId.is_valid(x):
+        return None
+    return ObjectId(x)
 
 
 async def _next_seq_for_year(year: int) -> int:
@@ -85,6 +178,16 @@ async def _sync_counter_to_latest(year: int) -> int:
     )
     return max_seq
 
+async def _assert_staff_or_403(x_staff_id: str | None) -> ObjectId:
+    staff_oid = _parse_oid(x_staff_id)
+    if staff_oid is None:
+        raise HTTPException(403, "Missing/invalid X-Staff-Id")
+
+    u = await users_collection.find_one({"_id": staff_oid})
+    if not u or (u.get("role") or "").lower() != "staff":
+        raise HTTPException(403, "Not staff")
+
+    return staff_oid
 
 def _assert_owner_or_403(doc: dict, citizen_oid: ObjectId | None):
     anonymous = doc.get("citizen_ref", {}).get("anonymous", False)
@@ -245,8 +348,13 @@ ALLOWED = {"image/jpeg", "image/png", "image/jpg", "image/webp"}
 @router.post("/{request_id}/evidence")
 async def upload_evidence(
     request_id: str,
+    request: Request,  # ✅ added to build absolute URL
     file: UploadFile = File(...),
-    note: str | None = Form(default=None)
+    note: str | None = Form(default=None),
+
+    # ✅ allow both
+    x_citizen_id: str | None = Header(default=None, alias="X-Citizen-Id"),
+    x_staff_id: str | None = Header(default=None, alias="X-Staff-Id"),
 ):
     doc = await service_requests_collection.find_one({"request_id": request_id})
     if not doc:
@@ -255,6 +363,26 @@ async def upload_evidence(
     if file.content_type not in ALLOWED:
         raise HTTPException(400, f"Unsupported file type: {file.content_type}")
 
+    # ✅ decide uploader
+    uploader = None
+    uploader_id = None
+
+    staff_oid = _parse_oid(x_staff_id)
+    citizen_oid = _parse_oid(x_citizen_id)
+
+    if staff_oid:
+        await _assert_staff_or_403(x_staff_id)
+        uploader = "staff"
+        uploader_id = staff_oid
+    elif citizen_oid:
+        # citizen must be owner + not anonymous
+        _assert_owner_or_403(doc, citizen_oid)
+        uploader = "citizen"
+        uploader_id = citizen_oid
+    else:
+        raise HTTPException(403, "Missing X-Citizen-Id or X-Staff-Id")
+
+    # ext
     ext = ".jpg"
     if file.content_type == "image/png":
         ext = ".png"
@@ -263,28 +391,32 @@ async def upload_evidence(
 
     safe_name = f"{request_id}-{uuid.uuid4().hex}{ext}"
     out_path = UPLOAD_DIR / safe_name
+    out_path.write_bytes(await file.read())
 
-    contents = await file.read()
-    out_path.write_bytes(contents)
+    # ✅ build absolute URL (works with ngrok / deploy / localhost)
+    base_url = str(request.base_url).rstrip("/")  # e.g. https://xxxx.ngrok-free.dev
+    file_url = f"{base_url}/uploads/{safe_name}"
 
     now = datetime.utcnow()
     evidence_item = {
         "type": "photo",
-        "url": f"/uploads/{safe_name}",
-        "uploaded_by": "citizen",
-        "uploaded_at": now
+        "url": file_url,                      # ✅ absolute URL
+        "uploaded_by": uploader,              # citizen / staff
+        "uploaded_by_id": uploader_id,        # ObjectId
+        "uploaded_at": now,
     }
     if note:
         evidence_item["note"] = note
 
     await service_requests_collection.update_one(
         {"request_id": request_id},
-        {"$push": {"evidence": evidence_item},
-         "$set": {"timestamps.updated_at": now}}
+        {
+            "$push": {"evidence": evidence_item},
+            "$set": {"timestamps.updated_at": now}
+        }
     )
 
-    return {"ok": True, "url": evidence_item["url"]}
-
+    return {"ok": True, "url": evidence_item["url"], "uploaded_by": uploader}
 
 # =========================
 # List Requests
@@ -316,14 +448,32 @@ async def list_service_requests(citizen_id: str | None = Query(default=None)):
     return out
 
 
+def _actor_from_request(doc: dict, citizen_oid: ObjectId | None):
+    anonymous = doc.get("citizen_ref", {}).get("anonymous", False)
+
+    if anonymous:
+        return {"role": "anonymous", "email": "anonymous@system"}
+
+    # citizen action (best effort)
+    stored = doc.get("citizen_ref", {}).get("citizen_id")
+    same_owner = (citizen_oid is not None and stored == citizen_oid)
+
+    return {
+        "role": "citizen",
+        "email": "citizen@system",
+        "citizen_id": str(stored) if stored else None,
+        "verified_owner": same_owner
+    }
+
+
 # =========================
 # Update Request (ONLY NEW)
 # =========================
 @router.put("/{request_id}")
 async def update_service_request(
-    request_id: str,
-    body: UpdateServiceRequestBody,
-    x_citizen_id: str | None = Header(default=None, alias="X-Citizen-Id")
+        request_id: str,
+        body: UpdateServiceRequestBody,
+        x_citizen_id: str | None = Header(default=None, alias="X-Citizen-Id")
 ):
     citizen_oid = _parse_citizen_id(x_citizen_id)
 
@@ -354,12 +504,38 @@ async def update_service_request(
     if not update_doc:
         raise HTTPException(400, "No fields to update")
 
-    update_doc["timestamps.updated_at"] = datetime.utcnow()
+    now = datetime.utcnow()
+    update_doc["timestamps.updated_at"] = now
+
+    # ✅ compute changes BEFORE update
+    changes = {}
+    for k, v in update_doc.items():
+        if k.startswith("timestamps."):
+            continue
+
+        before_val = doc.get(k)
+        after_val = v
+        # compare as string for ObjectId/complex values safety
+        if str(before_val) != str(after_val):
+            changes[k] = {"from": before_val, "to": after_val}
 
     await service_requests_collection.update_one(
         {"request_id": request_id},
         {"$set": update_doc}
     )
+
+    # ✅ AUDIT: request updated
+    if changes:
+        actor = _actor_from_request(doc, citizen_oid)
+        await audit_service.log_event({
+            "time": now,
+            "type": "request.update",
+            "actor": actor,
+            "entity": {"type": "service_request", "id": request_id},
+            "message": f"Service request updated: {request_id}",
+            "meta": {"changes": changes}
+        })
+
     return {"ok": True}
 
 
@@ -368,8 +544,8 @@ async def update_service_request(
 # =========================
 @router.delete("/{request_id}")
 async def delete_service_request(
-    request_id: str,
-    x_citizen_id: str | None = Header(default=None, alias="X-Citizen-Id")
+        request_id: str,
+        x_citizen_id: str | None = Header(default=None, alias="X-Citizen-Id")
 ):
     citizen_oid = _parse_citizen_id(x_citizen_id)
 
@@ -383,32 +559,85 @@ async def delete_service_request(
 
     _assert_owner_or_403(doc, citizen_oid)
 
-    await service_requests_collection.delete_one({"request_id": request_id})
+    now = datetime.utcnow()
+
+    # snapshot for audit
+    snapshot = {
+        "category": doc.get("category"),
+        "sub_category": doc.get("sub_category"),
+        "zone_name": doc.get("zone_name"),
+        "status": doc.get("status"),
+        "priority": doc.get("priority"),
+        "created_at": (doc.get("timestamps") or {}).get("created_at"),
+    }
+
+    res = await service_requests_collection.delete_one({"request_id": request_id})
+    if res.deleted_count != 1:
+        raise HTTPException(500, "Delete failed")
+
+    # ✅ AUDIT: request deleted
+    actor = _actor_from_request(doc, citizen_oid)
+    await audit_service.log_event({
+        "time": now,
+        "type": "request.delete",
+        "actor": actor,
+        "entity": {"type": "service_request", "id": request_id},
+        "message": f"Service request deleted: {request_id}",
+        "meta": {"snapshot": snapshot}
+    })
+
     return {"ok": True}
 
 
 # =========================
 # Close Request (system/admin/employee action)
 # =========================
+# @router.post("/{request_id}/close")
+# async def close_service_request(request_id: str):
+#     doc = await service_requests_collection.find_one({"request_id": request_id})
+#     if not doc:
+#         raise HTTPException(404, "Request not found")
+#
+#     now = datetime.utcnow()
+#
+#     await service_requests_collection.update_one(
+#         {"request_id": request_id},
+#         {"$set": {
+#             "status": "closed",
+#             "timestamps.closed_at": now,
+#             "timestamps.updated_at": now
+#         }}
+#     )
+#
+#     await _ensure_performance_log_exists(doc)
+#
+#     await performance_logs_collection.update_one(
+#         {"request_id": doc["_id"]},
+#         {"$push": {"event_stream": {"type": "closed", "at": now}}},
+#         upsert=True
+#     )
+#
+#     return {"ok": True}
 @router.post("/{request_id}/close")
 async def close_service_request(request_id: str):
-    doc = await service_requests_collection.find_one({"request_id": request_id})
-    if not doc:
-        raise HTTPException(404, "Request not found")
-
     now = datetime.utcnow()
 
-    await service_requests_collection.update_one(
+    doc = await service_requests_collection.find_one_and_update(
         {"request_id": request_id},
         {"$set": {
             "status": "closed",
             "timestamps.closed_at": now,
             "timestamps.updated_at": now
-        }}
+        }},
+        return_document=ReturnDocument.AFTER
     )
+    if not doc:
+        raise HTTPException(404, "Request not found")
 
-    await _ensure_performance_log_exists(doc)
+    # ✅ compute + upsert KPIs
+    await _upsert_perf_log(doc)
 
+    # ✅ push event
     await performance_logs_collection.update_one(
         {"request_id": doc["_id"]},
         {"$push": {"event_stream": {"type": "closed", "at": now}}},
@@ -423,9 +652,9 @@ async def close_service_request(request_id: str):
 # =========================
 @router.post("/{request_id}/feedback")
 async def submit_feedback(
-    request_id: str,
-    body: CitizenFeedbackIn,
-    x_citizen_id: str | None = Header(default=None, alias="X-Citizen-Id")
+        request_id: str,
+        body: CitizenFeedbackIn,
+        x_citizen_id: str | None = Header(default=None, alias="X-Citizen-Id")
 ):
     citizen_oid = _parse_citizen_id(x_citizen_id)
 
@@ -457,13 +686,320 @@ async def submit_feedback(
 
     await _ensure_performance_log_exists(doc)
 
+    await service_requests_collection.update_one(
+        {"request_id": request_id},
+        {"$set": {"status": "closed", "timestamps.closed_at": now, "timestamps.updated_at": now}}
+    )
+
+    doc2 = await service_requests_collection.find_one({"request_id": request_id})
+    await _upsert_perf_log(doc2)
+
+    await performance_logs_collection.update_one(
+        {"request_id": doc2["_id"]},
+        {"$set": {"computed_kpis.citizen_feedback": fb},
+         "$push": {"event_stream": {"type": "citizen_feedback", "at": now, "data": fb}}},
+        upsert=True
+    )
+
+    # ✅ AUDIT: citizen feedback submitted
+    actor = _actor_from_request(doc, citizen_oid)
+    await audit_service.log_event({
+        "time": now,
+        "type": "request.feedback",
+        "actor": actor,
+        "entity": {"type": "service_request", "id": request_id},
+        "message": f"Citizen feedback submitted for request {request_id}",
+        "meta": {
+            "feedback": fb,
+            "previous_status": "resolved",
+            "new_status": "closed"
+        }
+    })
+
+    return {"ok": True, "citizen_feedback": fb}
+# =========================
+# Staff: List My Teams
+# =========================
+@router.get("/staff/me/teams")
+async def staff_my_teams(
+    x_staff_id: str | None = Header(default=None, alias="X-Staff-Id")
+):
+    staff_oid = await _assert_staff_or_403(x_staff_id)
+
+    teams = await team_collection.find({
+        "deleted": False,
+        "active": True,
+        "members": str(staff_oid)  # ✅ لأن members عندك strings
+    }, {"name": 1, "shift": 1, "zones": 1, "skills": 1}).to_list(None)
+
+    out = []
+    for t in teams:
+        out.append({
+            "id": str(t["_id"]),
+            "name": t.get("name"),
+            "shift": t.get("shift"),
+            "zones": t.get("zones", []),
+            "skills": t.get("skills", []),
+        })
+    return out
+
+# =========================
+# Staff: List Tasks (All my teams)
+# =========================
+@router.get("/staff/tasks")
+async def staff_list_tasks(
+    x_staff_id: str | None = Header(default=None, alias="X-Staff-Id")
+):
+    staff_oid = await _assert_staff_or_403(x_staff_id)
+
+    teams = await db["teams"].find({
+        "deleted": {"$ne": True},
+        "active": True,
+        "members": str(staff_oid)
+    }, {"_id": 1}).to_list(500)
+
+    team_oids = [t["_id"] for t in teams]
+    team_strs = [str(t["_id"]) for t in teams]
+
+    if not team_oids and not team_strs:
+        return []
+
+    filt = {
+        "$or": [
+            {"sla_policy.team_id": {"$in": team_oids}},
+            {"sla_policy.team_id": {"$in": team_strs}},
+        ]
+    }
+
+    rows = await service_requests_collection.find(filt).sort("timestamps.created_at", -1).to_list(200)
+
+    out = []
+    for d in rows:
+        coords = ((d.get("location") or {}).get("coordinates") or [None, None])
+        lng, lat = coords[0], coords[1]
+        out.append({
+            "request_id": d.get("request_id"),
+            "status": d.get("status", ""),
+            "priority": d.get("priority", ""),
+            "zone_name": d.get("zone_name", ""),
+            "address_hint": d.get("address_hint", ""),
+            "lat": lat,
+            "lng": lng,
+        })
+
+    return out
+
+
+
+
+
+# =========================
+# Staff: Tasks By Selected Teams
+# =========================
+from bson import ObjectId
+from fastapi import Query, Header, HTTPException
+
+@router.get("/staff/tasks/by-teams")
+async def staff_tasks_by_teams(
+    team_ids: list[str] = Query(default=[]),
+    x_staff_id: str | None = Header(default=None, alias="X-Staff-Id"),
+):
+    await _assert_staff_or_403(x_staff_id)
+
+    # convert ids
+    team_oids = [ObjectId(t) for t in team_ids if ObjectId.is_valid(t)]
+    team_strs = [t for t in team_ids if t]
+
+    if not team_oids and not team_strs:
+        return []
+
+    filt = {
+        "$or": [
+            {"assignment.assigned_team_id": {"$in": team_oids}},
+            {"sla_policy.team_id": {"$in": team_oids}},
+            # (optional) if some old docs stored as strings:
+            {"assignment.assigned_team_id": {"$in": team_strs}},
+            {"sla_policy.team_id": {"$in": team_strs}},
+        ]
+    }
+
+    rows = await service_requests_collection.find(filt).sort("timestamps.created_at", -1).to_list(200)
+
+    out = []
+    for d in rows:
+        coords = ((d.get("location") or {}).get("coordinates") or [None, None])
+        lng, lat = coords[0], coords[1]
+        out.append({
+            "request_id": d.get("request_id"),
+            "status": d.get("status", ""),
+            "priority": d.get("priority", ""),
+            "zone_name": d.get("zone_name", ""),
+            "address_hint": d.get("address_hint", ""),
+            "lat": lat,
+            "lng": lng,
+        })
+    return out
+
+
+
+
+# =========================
+# Staff: Update Status
+# =========================
+@router.post("/staff/{request_id}/status")
+async def staff_update_status(
+    request_id: str,
+    new_status: str = Form(...),
+    x_staff_id: str | None = Header(default=None, alias="X-Staff-Id")
+):
+    await _assert_staff_or_403(x_staff_id)
+
+    doc = await service_requests_collection.find_one({"request_id": request_id})
+    if not doc:
+        raise HTTPException(404, "Request not found")
+
+    current = (doc.get("status") or "").strip().lower()
+    ns = (new_status or "").strip().lower()
+
+    # allowed statuses
+    allowed = {"triaged", "assigned", "in_progress", "resolved"}
+    if ns not in allowed:
+        raise HTTPException(400, f"Invalid status. Allowed: {sorted(list(allowed))}")
+
+    # ✅ transition rules (no going back)
+    transitions = {
+        "new": {"triaged"},
+        "triaged": {"assigned"},
+        "assigned": {"in_progress"},
+        "in_progress": {"resolved"},
+        "resolved": set(),   # no further changes here (citizen feedback closes it)
+        "closed": set(),     # locked
+    }
+
+    # if current status is something unexpected, block
+    if current not in transitions:
+        raise HTTPException(400, f"Cannot change status from '{current}'")
+
+    # prevent same status re-submit (optional)
+    if ns == current:
+        return {"ok": True, "status": current}
+
+    # enforce forward-only transition
+    if ns not in transitions[current]:
+        raise HTTPException(
+            400,
+            f"Invalid transition: {current} -> {ns}. Allowed next: {sorted(list(transitions[current]))}"
+        )
+
+    now = datetime.utcnow()
+    sets = {"status": ns, "timestamps.updated_at": now}
+    if ns == "triaged": sets["timestamps.triaged_at"] = now
+    if ns == "assigned": sets["timestamps.assigned_at"] = now
+    if ns == "in_progress":
+        # (optional) if you want a timestamp for in_progress add it in schema
+        pass
+    if ns == "resolved": sets["timestamps.resolved_at"] = now
+
+    await service_requests_collection.update_one({"request_id": request_id}, {"$set": sets})
+
+    await _ensure_performance_log_exists(doc)
+    await performance_logs_collection.update_one(
+        {"request_id": doc["_id"]},
+        {"$push": {"event_stream": {"type": "status_changed", "at": now, "meta": {"from": current, "to": ns}}}},
+        upsert=True
+    )
+
+    return {"ok": True, "status": ns}
+
+
+# =========================
+# Staff: Close Direct (ONLY IF NOT RESOLVED)
+# =========================
+@router.post("/staff/{request_id}/close")
+async def staff_close_direct(
+    request_id: str,
+    x_staff_id: str | None = Header(default=None, alias="X-Staff-Id")
+):
+    await _assert_staff_or_403(x_staff_id)
+
+    doc = await service_requests_collection.find_one({"request_id": request_id})
+    if not doc:
+        raise HTTPException(404, "Request not found")
+
+    anonymous = (doc.get("citizen_ref") or {}).get("anonymous", False)
+    if not anonymous:
+        # ✅ ONLY anonymous can be closed directly by staff
+        raise HTTPException(400, "Staff can close directly ONLY for anonymous requests.")
+
+    status = (doc.get("status") or "").lower()
+    if status == "closed":
+        return {"ok": True, "status": "closed"}
+
+    now = datetime.utcnow()
+    await service_requests_collection.update_one(
+        {"request_id": request_id},
+        {"$set": {
+            "status": "closed",
+            "timestamps.closed_at": now,
+            "timestamps.updated_at": now
+        }}
+    )
+
+    await _ensure_performance_log_exists(doc)
+    await performance_logs_collection.update_one(
+        {"request_id": doc["_id"]},
+        {"$push": {"event_stream": {"type": "closed_by_staff", "at": now}}},
+        upsert=True
+    )
+    await performance_logs_collection.update_one(
+        {"request_id": doc["_id"]},
+        {"$push": {"event_stream": {"type": "closed", "at": now}}},
+        upsert=True
+    )
+
+    return {"ok": True, "status": "closed"}
+
+# =========================
+# Citizen Feedback (ONLY RESOLVED)
+# =========================
+@router.post("/{request_id}/feedback")
+async def submit_feedback(
+    request_id: str,
+    body: CitizenFeedbackIn,
+    x_citizen_id: str | None = Header(default=None, alias="X-Citizen-Id")
+):
+    doc = await service_requests_collection.find_one({"request_id": request_id})
+    if not doc:
+        raise HTTPException(404, "Request not found")
+
+    anonymous = (doc.get("citizen_ref") or {}).get("anonymous", False)
+    if anonymous:
+        raise HTTPException(403, "Anonymous requests cannot submit feedback")
+
+    status = (doc.get("status") or "").lower()
+    if status != "resolved":
+        raise HTTPException(400, "Feedback is allowed only when status=RESOLVED")
+
+    citizen_oid = _parse_oid(x_citizen_id)
+    _assert_owner_or_403(doc, citizen_oid)
+
+    now = datetime.utcnow()
+    fb = {"stars": int(body.stars), "comment": body.comment, "submitted_at": now}
+
+    await service_requests_collection.update_one(
+        {"request_id": request_id},
+        {"$set": {"status": "closed",
+                  "timestamps.closed_at": now,
+                  "timestamps.updated_at": now}}
+    )
+
+    await _ensure_performance_log_exists(doc)
     await performance_logs_collection.update_one(
         {"request_id": doc["_id"]},
         {"$set": {"computed_kpis.citizen_feedback": fb},
          "$push": {"event_stream": {"type": "citizen_feedback", "at": now, "data": fb}}},
         upsert=True
     )
-
     await performance_logs_collection.update_one(
         {"request_id": doc["_id"]},
         {"$push": {"event_stream": {"type": "closed", "at": now}}},
@@ -471,3 +1007,4 @@ async def submit_feedback(
     )
 
     return {"ok": True, "citizen_feedback": fb}
+

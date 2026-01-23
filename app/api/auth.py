@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from datetime import datetime
 
+from app.core.security import verify_password
 from app.schemas.user import LoginRequest, LoginResponse, UserCreate
 from app.core.enums import UserRole
 
@@ -55,7 +56,7 @@ async def register_mobile(body: UserCreate):
     if existing:
         raise HTTPException(409, "Email already exists")
 
-    u = await create_user(users_collection, body)
+    u = await create_user(body)
     if not u:
         raise HTTPException(409, "Email already exists")
 
@@ -77,7 +78,7 @@ async def register_mobile(body: UserCreate):
         }
     })
 
-    return {"user": to_user_out(u), "token": "dev-token"}  # later JWT
+    return {"user": u, "token": "dev-token"}
 
 
 # =========================
@@ -92,9 +93,41 @@ async def login_mobile(body: LoginRequest):
     if not u:
         raise HTTPException(401, "Invalid credentials")
 
-    # منع admin من الموبايل
-    # u ممكن يكون dict فيه role = "admin" أو enum value
     role_val = u.get("role") if isinstance(u, dict) else None
+
+    # ✅ FIX: لو staff رجع deleted=true، حاول تختار staff غير محذوف بنفس الايميل
+    if role_val == UserRole.staff.value and u.get("deleted") is True:
+        # جيب كل staff بهذا الايميل ومرتبين (الأحدث أولاً)
+        candidates = await users_collection.find(
+            {
+                "role": UserRole.staff.value,
+                "deleted": {"$ne": True},
+                # عدّل المفتاح حسب تخزينك للايميل:
+                # إذا عندك contacts.email:
+                "contacts.email": body.email
+                # إذا الايميل عندك user.email بدلها:
+                # "email": body.email
+            }
+        ).sort("created_at", -1).to_list(10)
+
+        picked = None
+        for cand in candidates:
+            # لازم تعدل اسم الحقل حسب تخزينك:
+            pw_hash = cand.get("password_hash") or cand.get("password")  # حسب نظامك
+            if not pw_hash:
+                continue
+            if verify_password(body.password, pw_hash):
+                picked = cand
+                break
+
+        if not picked:
+            # لا يوجد حساب staff غير محذوف يطابق كلمة المرور
+            raise HTTPException(401, "Unauthorized")
+
+        u = picked
+        role_val = u.get("role")
+
+    # منع admin من الموبايل
     if role_val == UserRole.admin.value:
         raise HTTPException(403, "Admins must login from website")
 
@@ -103,7 +136,6 @@ async def login_mobile(body: LoginRequest):
     if role_val not in allowed_roles:
         raise HTTPException(403, "Role not allowed for mobile app")
 
-    # ✅ نحول لهيكل UserOut الجديد قبل audit/response
     user_out = to_user_out(u) if isinstance(u, dict) else u
 
     await audit_service.log_event({
@@ -118,12 +150,11 @@ async def login_mobile(body: LoginRequest):
             "id": _safe_id_from_user(user_out),
         },
         "message": f"User logged in ({_safe_email_from_user(user_out)})",
-        "meta": {
-            "source": "mobile"
-        }
+        "meta": {"source": "mobile"}
     })
 
-    return {"user": user_out, "token": "dev-token"}  # later JWT
+    return {"user": user_out, "token": "dev-token"}
+
 
 
 # =========================
