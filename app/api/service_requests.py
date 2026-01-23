@@ -4,6 +4,8 @@ from datetime import datetime
 from bson import ObjectId
 from pathlib import Path
 import uuid
+import os
+
 
 from pymongo.errors import DuplicateKeyError
 from pymongo import ReturnDocument
@@ -370,17 +372,28 @@ async def upload_evidence(
     staff_oid = _parse_oid(x_staff_id)
     citizen_oid = _parse_oid(x_citizen_id)
 
+    current_status = (doc.get("status") or "").strip().lower()
+
+    # ✅ decide uploader + permissions
     if staff_oid:
         await _assert_staff_or_403(x_staff_id)
+
+        # ✅ staff can upload ONLY when resolved
+        if current_status != "resolved":
+            raise HTTPException(400, "Staff can upload evidence ONLY when status=RESOLVED")
+
         uploader = "staff"
         uploader_id = staff_oid
+
     elif citizen_oid:
         _assert_owner_or_403(doc, citizen_oid)
         uploader = "citizen"
         uploader_id = citizen_oid
+
     else:
         raise HTTPException(403, "Missing X-Citizen-Id or X-Staff-Id")
 
+    # ext
     ext = ".jpg"
     if file.content_type == "image/png":
         ext = ".png"
@@ -390,9 +403,14 @@ async def upload_evidence(
     safe_name = f"{request_id}-{uuid.uuid4().hex}{ext}"
     out_path = UPLOAD_DIR / safe_name
     out_path.write_bytes(await file.read())
+    print("SAVED FILE:", out_path.resolve(), "SIZE:", out_path.stat().st_size)
+    print("UPLOADER:", uploader, "STATUS:", current_status)
 
-    base_url = str(request.base_url).rstrip("/")
-    file_url = f"{base_url}/uploads/{safe_name}"
+    public_base = (os.getenv("PUBLIC_BASE_URL") or "").strip().rstrip("/")
+    if not public_base:
+        raise HTTPException(500, "PUBLIC_BASE_URL is not set")
+
+    file_url = f"{public_base}/uploads/{safe_name}"
 
     now = datetime.utcnow()
     evidence_item = {
@@ -707,13 +725,22 @@ async def staff_list_tasks(
         return []
 
     filt = {
-        "$or": [
-            {"sla_policy.team_id": {"$in": team_oids}},
-            {"sla_policy.team_id": {"$in": team_strs}},
+        "$and": [
+            {
+                "$or": [
+                    {"sla_policy.team_id": {"$in": team_oids}},
+                    {"sla_policy.team_id": {"$in": team_strs}},
+                ]
+            },
+            {
+                "status": {"$nin": ["closed", "resolved"]}
+            }
         ]
     }
 
-    rows = await service_requests_collection.find(filt).sort("timestamps.created_at", -1).to_list(200)
+    rows = await service_requests_collection.find(filt) \
+        .sort("timestamps.created_at", -1) \
+        .to_list(200)
 
     out = []
     for d in rows:
@@ -730,6 +757,7 @@ async def staff_list_tasks(
         })
 
     return out
+
 
 
 # =========================
@@ -793,10 +821,12 @@ async def staff_update_status(
     current = (doc.get("status") or "").strip().lower()
     ns = (new_status or "").strip().lower()
 
+    # allowed statuses
     allowed = {"triaged", "assigned", "in_progress", "resolved"}
     if ns not in allowed:
         raise HTTPException(400, f"Invalid status. Allowed: {sorted(list(allowed))}")
 
+    # forward-only transitions
     transitions = {
         "new": {"triaged"},
         "triaged": {"assigned"},
@@ -809,9 +839,11 @@ async def staff_update_status(
     if current not in transitions:
         raise HTTPException(400, f"Cannot change status from '{current}'")
 
+    # prevent same status
     if ns == current:
         return {"ok": True, "status": current}
 
+    # enforce forward-only
     if ns not in transitions[current]:
         raise HTTPException(
             400,
@@ -819,17 +851,45 @@ async def staff_update_status(
         )
 
     now = datetime.utcnow()
-    sets = {"status": ns, "timestamps.updated_at": now}
-    if ns == "triaged": sets["timestamps.triaged_at"] = now
-    if ns == "assigned": sets["timestamps.assigned_at"] = now
-    if ns == "resolved": sets["timestamps.resolved_at"] = now
 
-    await service_requests_collection.update_one({"request_id": request_id}, {"$set": sets})
+    # ✅ SETS (timestamps)
+    sets = {
+        "status": ns,
+        "timestamps.updated_at": now
+    }
+    if ns == "triaged":
+        sets["timestamps.triaged_at"] = now
+    if ns == "assigned":
+        sets["timestamps.assigned_at"] = now
+    if ns == "in_progress":
+        sets["timestamps.in_progress_at"] = now  # ✅ ADDED
+    if ns == "resolved":
+        sets["timestamps.resolved_at"] = now
 
-    await _ensure_performance_log_exists(doc)
+    await service_requests_collection.update_one(
+        {"request_id": request_id},
+        {"$set": sets}
+    )
+
+    # reload updated doc (so KPI computation uses latest status/timestamps)
+    doc2 = await service_requests_collection.find_one({"request_id": request_id})
+
+    # ✅ ensure perf log + update KPIs
+    await _ensure_performance_log_exists(doc2)
+    await _upsert_perf_log(doc2)
+
+    # ✅ push event stream
     await performance_logs_collection.update_one(
-        {"request_id": doc["_id"]},
-        {"$push": {"event_stream": {"type": "status_changed", "at": now, "meta": {"from": current, "to": ns}}}},
+        {"request_id": doc2["_id"]},
+        {
+            "$push": {
+                "event_stream": {
+                    "type": "status_changed",
+                    "at": now,
+                    "meta": {"from": current, "to": ns}
+                }
+            }
+        },
         upsert=True
     )
 
@@ -850,6 +910,7 @@ async def staff_update_status(
     )
 
     return {"ok": True, "status": ns}
+
 
 
 # =========================
