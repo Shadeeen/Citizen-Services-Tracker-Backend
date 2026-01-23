@@ -10,4 +10,5 @@ service = AuditService(repo)
 
 @router.get("")
 async def list_audit_logs():
+
     return await service.list_logs()

@@ -31,6 +31,91 @@ counters_collection = db["counters"]
 # -------------------------
 # Helpers
 # -------------------------
+
+def _dt(v):
+    if isinstance(v, datetime):
+        return v
+    if isinstance(v, str):
+        try:
+            return datetime.fromisoformat(v.replace("Z", "+00:00"))
+        except:
+            return None
+    return None
+
+
+def _minutes_between(a: datetime, b: datetime) -> int:
+    return int(max(0, (b - a).total_seconds() // 60))
+
+
+def _hours_between(a: datetime, b: datetime) -> float:
+    return max(0.0, (b - a).total_seconds() / 3600.0)
+
+
+def _compute_kpis(sr: dict) -> dict:
+    ts = sr.get("timestamps") or {}
+    created_at = _dt(ts.get("created_at")) or _dt(sr.get("created_at")) or datetime.utcnow()
+    triaged_at = _dt(ts.get("triaged_at")) or created_at
+
+    status = (sr.get("status") or "").lower()
+    end_at = None
+    if status == "resolved":
+        end_at = _dt(ts.get("resolved_at"))
+    elif status == "closed":
+        end_at = _dt(ts.get("closed_at")) or _dt(ts.get("updated_at"))
+
+    now = datetime.utcnow()
+    current = end_at or now
+
+    sla_policy = sr.get("sla_policy") or {}
+    target_h = float(sla_policy.get("target_hours") or 0)
+    breach_h = float(sla_policy.get("breach_threshold_hours") or target_h)
+
+    elapsed_h = _hours_between(triaged_at, current)
+
+    if breach_h > 0 and elapsed_h >= breach_h:
+        sla_state = "breached"
+    elif target_h > 0 and elapsed_h >= target_h:
+        sla_state = "at_risk"
+    else:
+        sla_state = "on_track"
+
+    resolution_minutes = None
+    if end_at is not None:
+        resolution_minutes = _minutes_between(triaged_at, end_at)
+
+    # keep existing feedback if you already stored it
+    return {
+        "resolution_minutes": resolution_minutes,
+        "sla_target_hours": target_h,
+        "sla_state": sla_state,
+        "escalation_count": 0,  # until you implement escalations
+        "breach_reason": None,  # until you implement breach reason
+        "computed_at": now,
+    }
+
+
+async def _upsert_perf_log(sr: dict):
+    sr_oid = sr["_id"]
+    now = datetime.utcnow()
+    kpis = _compute_kpis(sr)
+
+    await performance_logs_collection.update_one(
+        {"request_id": sr_oid},
+        {
+            "$setOnInsert": {
+                "request_id": sr_oid,
+                "event_stream": [],
+                "created_at": now,
+            },
+            "$set": {
+                "computed_kpis": kpis,
+                "updated_at": now,
+            },
+        },
+        upsert=True,
+    )
+
+
 def _make_request_id(year: int, seq: int) -> str:
     return f"CST-{year}-{seq:04d}"
 
@@ -244,9 +329,9 @@ ALLOWED = {"image/jpeg", "image/png", "image/jpg", "image/webp"}
 
 @router.post("/{request_id}/evidence")
 async def upload_evidence(
-    request_id: str,
-    file: UploadFile = File(...),
-    note: str | None = Form(default=None)
+        request_id: str,
+        file: UploadFile = File(...),
+        note: str | None = Form(default=None)
 ):
     doc = await service_requests_collection.find_one({"request_id": request_id})
     if not doc:
@@ -316,14 +401,32 @@ async def list_service_requests(citizen_id: str | None = Query(default=None)):
     return out
 
 
+def _actor_from_request(doc: dict, citizen_oid: ObjectId | None):
+    anonymous = doc.get("citizen_ref", {}).get("anonymous", False)
+
+    if anonymous:
+        return {"role": "anonymous", "email": "anonymous@system"}
+
+    # citizen action (best effort)
+    stored = doc.get("citizen_ref", {}).get("citizen_id")
+    same_owner = (citizen_oid is not None and stored == citizen_oid)
+
+    return {
+        "role": "citizen",
+        "email": "citizen@system",
+        "citizen_id": str(stored) if stored else None,
+        "verified_owner": same_owner
+    }
+
+
 # =========================
 # Update Request (ONLY NEW)
 # =========================
 @router.put("/{request_id}")
 async def update_service_request(
-    request_id: str,
-    body: UpdateServiceRequestBody,
-    x_citizen_id: str | None = Header(default=None, alias="X-Citizen-Id")
+        request_id: str,
+        body: UpdateServiceRequestBody,
+        x_citizen_id: str | None = Header(default=None, alias="X-Citizen-Id")
 ):
     citizen_oid = _parse_citizen_id(x_citizen_id)
 
@@ -354,12 +457,38 @@ async def update_service_request(
     if not update_doc:
         raise HTTPException(400, "No fields to update")
 
-    update_doc["timestamps.updated_at"] = datetime.utcnow()
+    now = datetime.utcnow()
+    update_doc["timestamps.updated_at"] = now
+
+    # ✅ compute changes BEFORE update
+    changes = {}
+    for k, v in update_doc.items():
+        if k.startswith("timestamps."):
+            continue
+
+        before_val = doc.get(k)
+        after_val = v
+        # compare as string for ObjectId/complex values safety
+        if str(before_val) != str(after_val):
+            changes[k] = {"from": before_val, "to": after_val}
 
     await service_requests_collection.update_one(
         {"request_id": request_id},
         {"$set": update_doc}
     )
+
+    # ✅ AUDIT: request updated
+    if changes:
+        actor = _actor_from_request(doc, citizen_oid)
+        await audit_service.log_event({
+            "time": now,
+            "type": "request.update",
+            "actor": actor,
+            "entity": {"type": "service_request", "id": request_id},
+            "message": f"Service request updated: {request_id}",
+            "meta": {"changes": changes}
+        })
+
     return {"ok": True}
 
 
@@ -368,8 +497,8 @@ async def update_service_request(
 # =========================
 @router.delete("/{request_id}")
 async def delete_service_request(
-    request_id: str,
-    x_citizen_id: str | None = Header(default=None, alias="X-Citizen-Id")
+        request_id: str,
+        x_citizen_id: str | None = Header(default=None, alias="X-Citizen-Id")
 ):
     citizen_oid = _parse_citizen_id(x_citizen_id)
 
@@ -383,32 +512,85 @@ async def delete_service_request(
 
     _assert_owner_or_403(doc, citizen_oid)
 
-    await service_requests_collection.delete_one({"request_id": request_id})
+    now = datetime.utcnow()
+
+    # snapshot for audit
+    snapshot = {
+        "category": doc.get("category"),
+        "sub_category": doc.get("sub_category"),
+        "zone_name": doc.get("zone_name"),
+        "status": doc.get("status"),
+        "priority": doc.get("priority"),
+        "created_at": (doc.get("timestamps") or {}).get("created_at"),
+    }
+
+    res = await service_requests_collection.delete_one({"request_id": request_id})
+    if res.deleted_count != 1:
+        raise HTTPException(500, "Delete failed")
+
+    # ✅ AUDIT: request deleted
+    actor = _actor_from_request(doc, citizen_oid)
+    await audit_service.log_event({
+        "time": now,
+        "type": "request.delete",
+        "actor": actor,
+        "entity": {"type": "service_request", "id": request_id},
+        "message": f"Service request deleted: {request_id}",
+        "meta": {"snapshot": snapshot}
+    })
+
     return {"ok": True}
 
 
 # =========================
 # Close Request (system/admin/employee action)
 # =========================
+# @router.post("/{request_id}/close")
+# async def close_service_request(request_id: str):
+#     doc = await service_requests_collection.find_one({"request_id": request_id})
+#     if not doc:
+#         raise HTTPException(404, "Request not found")
+#
+#     now = datetime.utcnow()
+#
+#     await service_requests_collection.update_one(
+#         {"request_id": request_id},
+#         {"$set": {
+#             "status": "closed",
+#             "timestamps.closed_at": now,
+#             "timestamps.updated_at": now
+#         }}
+#     )
+#
+#     await _ensure_performance_log_exists(doc)
+#
+#     await performance_logs_collection.update_one(
+#         {"request_id": doc["_id"]},
+#         {"$push": {"event_stream": {"type": "closed", "at": now}}},
+#         upsert=True
+#     )
+#
+#     return {"ok": True}
 @router.post("/{request_id}/close")
 async def close_service_request(request_id: str):
-    doc = await service_requests_collection.find_one({"request_id": request_id})
-    if not doc:
-        raise HTTPException(404, "Request not found")
-
     now = datetime.utcnow()
 
-    await service_requests_collection.update_one(
+    doc = await service_requests_collection.find_one_and_update(
         {"request_id": request_id},
         {"$set": {
             "status": "closed",
             "timestamps.closed_at": now,
             "timestamps.updated_at": now
-        }}
+        }},
+        return_document=ReturnDocument.AFTER
     )
+    if not doc:
+        raise HTTPException(404, "Request not found")
 
-    await _ensure_performance_log_exists(doc)
+    # ✅ compute + upsert KPIs
+    await _upsert_perf_log(doc)
 
+    # ✅ push event
     await performance_logs_collection.update_one(
         {"request_id": doc["_id"]},
         {"$push": {"event_stream": {"type": "closed", "at": now}}},
@@ -423,9 +605,9 @@ async def close_service_request(request_id: str):
 # =========================
 @router.post("/{request_id}/feedback")
 async def submit_feedback(
-    request_id: str,
-    body: CitizenFeedbackIn,
-    x_citizen_id: str | None = Header(default=None, alias="X-Citizen-Id")
+        request_id: str,
+        body: CitizenFeedbackIn,
+        x_citizen_id: str | None = Header(default=None, alias="X-Citizen-Id")
 ):
     citizen_oid = _parse_citizen_id(x_citizen_id)
 
@@ -457,17 +639,34 @@ async def submit_feedback(
 
     await _ensure_performance_log_exists(doc)
 
+    await service_requests_collection.update_one(
+        {"request_id": request_id},
+        {"$set": {"status": "closed", "timestamps.closed_at": now, "timestamps.updated_at": now}}
+    )
+
+    doc2 = await service_requests_collection.find_one({"request_id": request_id})
+    await _upsert_perf_log(doc2)
+
     await performance_logs_collection.update_one(
-        {"request_id": doc["_id"]},
+        {"request_id": doc2["_id"]},
         {"$set": {"computed_kpis.citizen_feedback": fb},
          "$push": {"event_stream": {"type": "citizen_feedback", "at": now, "data": fb}}},
         upsert=True
     )
 
-    await performance_logs_collection.update_one(
-        {"request_id": doc["_id"]},
-        {"$push": {"event_stream": {"type": "closed", "at": now}}},
-        upsert=True
-    )
+    # ✅ AUDIT: citizen feedback submitted
+    actor = _actor_from_request(doc, citizen_oid)
+    await audit_service.log_event({
+        "time": now,
+        "type": "request.feedback",
+        "actor": actor,
+        "entity": {"type": "service_request", "id": request_id},
+        "message": f"Citizen feedback submitted for request {request_id}",
+        "meta": {
+            "feedback": fb,
+            "previous_status": "resolved",
+            "new_status": "closed"
+        }
+    })
 
     return {"ok": True, "citizen_feedback": fb}

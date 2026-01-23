@@ -198,49 +198,95 @@ async def remove(user_id: str):
 
     return {"success": True}
 
+# @router.post("/{user_id}/verify", response_model=UserOut)
+# async def verify_user(user_id: str):
+#     user = await users_collection.find_one({"_id": ObjectId(user_id)})
+#     if not user:
+#         raise HTTPException(404, "User not found")
+#
+#     if user.get("verification", {}).get("state") == "verified":
+#         user["id"] = str(user["_id"])
+#         del user["_id"]
+#         return user
+#
+#     await users_collection.update_one(
+#         {"_id": ObjectId(user_id)},
+#         {
+#             "$set": {
+#                 "verification.state": "verified",
+#                 "verification.verified_at": datetime.utcnow()
+#             }
+#         }
+#     )
+#
+#     await audit_service.log_event({
+#         "time": datetime.utcnow(),
+#         "type": "user.verify",
+#         "actor": {
+#             "role": "admin",
+#             "email": "admin@system"
+#         },
+#         "entity": {
+#             "type": "user",
+#             "id": user_id
+#         },
+#         "message": f"User verified ({user.get('full_name')})",
+#         "meta": {
+#             "email": user.get("contacts", {}).get("email")
+#         }
+#     })
+#
+#     # 🔴 FIX HERE
+#     user["verification"]["state"] = "verified"
+#     user["verification"]["verified_at"] = datetime.utcnow()
+#
+#     user["id"] = str(user["_id"])
+#     del user["_id"]
+#
+#     return user
 @router.post("/{user_id}/verify", response_model=UserOut)
 async def verify_user(user_id: str):
-    user = await users_collection.find_one({"_id": ObjectId(user_id)})
+    oid = ObjectId(user_id)
+
+    user = await users_collection.find_one({"_id": oid})
     if not user:
         raise HTTPException(404, "User not found")
 
+    # already verified -> still normalize before return
     if user.get("verification", {}).get("state") == "verified":
         user["id"] = str(user["_id"])
-        del user["_id"]
+        user.pop("_id", None)
+
+        # ✅ normalize email
+        if not user.get("email"):
+            user["email"] = (user.get("contacts") or {}).get("email")
+
         return user
 
+    now = datetime.utcnow()
+
     await users_collection.update_one(
-        {"_id": ObjectId(user_id)},
-        {
-            "$set": {
-                "verification.state": "verified",
-                "verification.verified_at": datetime.utcnow()
-            }
-        }
+        {"_id": oid},
+        {"$set": {"verification.state": "verified", "verification.verified_at": now}},
     )
 
+    # ✅ fetch updated doc (so you return what DB really has)
+    user = await users_collection.find_one({"_id": oid})
+
     await audit_service.log_event({
-        "time": datetime.utcnow(),
+        "time": now,
         "type": "user.verify",
-        "actor": {
-            "role": "admin",
-            "email": "admin@system"
-        },
-        "entity": {
-            "type": "user",
-            "id": user_id
-        },
+        "actor": {"role": "admin", "email": "admin@system"},
+        "entity": {"type": "user", "id": user_id},
         "message": f"User verified ({user.get('full_name')})",
-        "meta": {
-            "email": user.get("contacts", {}).get("email")
-        }
+        "meta": {"email": user.get("email") or (user.get("contacts") or {}).get("email")},
     })
 
-    # 🔴 FIX HERE
-    user["verification"]["state"] = "verified"
-    user["verification"]["verified_at"] = datetime.utcnow()
-
     user["id"] = str(user["_id"])
-    del user["_id"]
+    user.pop("_id", None)
+
+    # ✅ normalize email again
+    if not user.get("email"):
+        user["email"] = (user.get("contacts") or {}).get("email")
 
     return user
