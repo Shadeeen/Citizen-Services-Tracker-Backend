@@ -1,8 +1,19 @@
 from motor.motor_asyncio import AsyncIOMotorClient
+from dotenv import load_dotenv
+from pathlib import Path
+import os
 
-client = AsyncIOMotorClient("mongodb+srv://mohJadallah_db_user:Mohammad_04@cluster0.rmqob2j.mongodb.net/cst?appName=Cluster0")
-db = client["cst"]
+# your .env is in the project root (same level as "app/")
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
+MONGO_URI = os.getenv("MONGO_URI")
+MONGO_DB = os.getenv("MONGO_DB", "cst")
+
+if not MONGO_URI:
+    raise RuntimeError("Missing MONGO_URI in .env")
+
+client = AsyncIOMotorClient(MONGO_URI)
+db = client[MONGO_DB]
 sla_rules_collection = db["sla_rules"]
 sla_collection = db["sla_policies"]
 audit_collection = db["audit_logs"]
