@@ -1,7 +1,5 @@
 # 🏛️ Citizen Services Tracker (CST)
 
-> A geo-enabled, workflow-driven municipal service management system  
-> **Final Project – Computer Science Department**
 
 ---
 
