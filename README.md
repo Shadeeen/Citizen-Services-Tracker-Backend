@@ -15,6 +15,13 @@
 
 The system enforces **structured workflows**, **SLA policies**, and **performance tracking**, while providing **geo-based visualization** and **analytics dashboards** to support data-driven decision making.
 
+
+## Frontend Implementation
+
+The frontend for this project was developed and maintained separately by my project partner, **Mohammad Jadallah**.
+
+Frontend repository:  
+https://github.com/mohjad04/Cst_Proj
 ---
 
 ##  Project Goals
