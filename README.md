@@ -3,13 +3,13 @@
 
 ---
 
-## 👥 Team
+##  Team
 - **Shaden Hamda**
 - **Mohammad Jadallah**
 
 ---
 
-## 📌 Overview
+##  Overview
 
 **Citizen Services Tracker (CST)** is a backend-focused Management Information System (MIS) built to help municipalities efficiently manage citizen-reported service issues.
 
@@ -17,7 +17,7 @@ The system enforces **structured workflows**, **SLA policies**, and **performanc
 
 ---
 
-## 🎯 Project Goals
+##  Project Goals
 
 - Enable citizens to report municipal issues with location and evidence  
 - Enforce a clear request lifecycle with strict workflow rules  
@@ -28,7 +28,7 @@ The system enforces **structured workflows**, **SLA policies**, and **performanc
 
 ---
 
-## 🧱 System Architecture
+##  System Architecture
 
 **CST is not a simple ticketing system.**  
 It is built around:
@@ -41,27 +41,27 @@ It is built around:
 
 ---
 
-## ⚙️ Tech Stack
+##  Tech Stack
 
-### 🔧 Backend
+###  Backend
 - **FastAPI (Python)**
 - **MongoDB (PyMongo)**
 - RESTful APIs
 - OpenAPI / Swagger documentation
 
-### 🗺️ Maps & Visualization
+###  Maps & Visualization
 - OpenStreetMap
 - Leaflet
 - GeoJSON feeds (heatmaps & clustering)
 
-### 💻 Frontend
+###  Frontend
 - Web dashboard (React-based views)
 
 ---
 
-## 🔑 Core Features
+##  Core Features
 
-### 📝 Service Request Management
+###  Service Request Management
 - Workflow lifecycle:  
   `new → triaged → assigned → in_progress → resolved → closed`
 - Duplicate detection and request merging  
@@ -70,7 +70,7 @@ It is built around:
 
 ---
 
-### 👤 Citizen Portal
+###  Citizen Portal
 - Verified and anonymous reporting  
 - Request tracking and status timeline  
 - Comments and additional evidence  
@@ -78,7 +78,7 @@ It is built around:
 
 ---
 
-### 👷 Service Agents & Assignment
+###  Service Agents & Assignment
 - Agent and team management  
 - Zone coverage and skill matching  
 - Automatic assignment policies  
@@ -86,7 +86,7 @@ It is built around:
 
 ---
 
-### ⏱️ SLA & Performance Tracking
+###  SLA & Performance Tracking
 - Category- and priority-based SLA policies  
 - Automated escalation rules  
 - Immutable performance logs  
@@ -94,7 +94,7 @@ It is built around:
 
 ---
 
-### 📊 Analytics & Geo Visualization
+###  Analytics & Geo Visualization
 - Live heat-map of open requests  
 - Zone-based clustering  
 - SLA compliance metrics  
@@ -102,7 +102,7 @@ It is built around:
 
 ---
 
-## 🛠️ What We Worked On
+##  What We Worked On
 
 - Backend system design and architecture  
 - REST API design and validation  
@@ -115,7 +115,7 @@ It is built around:
 
 ---
 
-## 🚀 Setup & Run
+##  Setup & Run
 
 ### Prerequisites
 - Python 3.10+
